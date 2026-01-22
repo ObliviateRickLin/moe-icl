@@ -182,10 +182,11 @@ class LinearClassification(LinearRegression):
             seeds=None,
             scale=1,
             logistic=False,
+            normalize_w=False,
             device='cpu',
     ):
         super(LinearClassification, self).__init__(
-            n_dims, batch_size, pool_dict, seeds, scale, device=device
+            n_dims, batch_size, pool_dict, seeds, scale, normalize_w=normalize_w, device=device
         )
         self.logistic = logistic
 
