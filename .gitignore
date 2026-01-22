@@ -1,0 +1,33 @@
+# Experiment outputs (large / generated)
+encoder_final/
+encoder_moe/
+gpt_final/
+gpt_final_backup_*/
+results/
+results_backup_*/
+
+# W&B artifacts/logs
+**/wandb/
+**/wandb/**
+
+# Checkpoints / weights
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+
+# Logs
+*.log
+*.out
+*.err
+
+# Python caches
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS junk
+.DS_Store
+Thumbs.db

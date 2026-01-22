@@ -1,0 +1,25 @@
+inherit: 
+    - ../base_encoder.yaml
+
+model:
+    n_dims: 20
+    use_moe: False
+
+training:
+    train_steps: 100000
+    tasks:
+        - name: noisy_linear_regression
+          kwargs: {noise_std: 0.1, normalize_w: True}
+        - name: noisy_linear_regression
+          kwargs: {noise_std: 0.5, normalize_w: True}
+    curriculum:
+        points:
+            start: 21
+            end: 21
+            inc: 2
+            interval: 2000
+
+out_dir: /root/moe-icl/results/mixed_noise_dense
+
+wandb:
+    name: mixed_noise_dense

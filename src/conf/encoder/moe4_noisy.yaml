@@ -1,0 +1,38 @@
+inherit: 
+    - ../base_encoder.yaml
+
+model:
+    n_dims: 20
+    n_embd: 128
+    n_layer: 12
+    n_head: 4
+    # MoE-4 with noisy routing
+    use_moe: True
+    num_experts: 4
+    top_k: 1
+    seq_level_routing: False
+    aux_loss_coef: 0.01
+    router_noise: True
+    noise_scale: 1.0
+
+training:
+    train_steps: 100001
+    learning_rate: 0.0001
+    batch_size: 64
+    tasks:
+        - name: noisy_linear_regression
+          kwargs: {noise_std: 0.1, normalize_w: True}
+        - name: noisy_linear_regression
+          kwargs: {noise_std: 0.5, normalize_w: True}
+    curriculum:
+        points:
+            start: 21
+            end: 21
+            inc: 2
+            interval: 2000
+
+out_dir: ../results/moe4_noisy
+
+wandb:
+    name: "moe4_noisy_routing"
+    project: "moe-icl"
