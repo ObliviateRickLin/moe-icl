@@ -16,7 +16,7 @@ model:
   n_layer: 12
   n_head: 8
   mlp_hidden_mult: 4
-  rmsnorm_eps: 1e-06
+  rmsnorm_eps: 0.000001
   use_moe: True
   num_experts: 4
   top_k: 1
