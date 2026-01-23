@@ -117,7 +117,7 @@ def main():
     parser.add_argument(
         "--prefer-model-step",
         type=int,
-        default=10000,
+        default=100000,
         help="Prefer loading model_{step}.pt if present; otherwise fall back to state.pt.",
     )
     parser.add_argument("--num-eval-examples", type=int, default=6400)
