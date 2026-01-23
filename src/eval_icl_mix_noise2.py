@@ -65,6 +65,22 @@ def build_conf(model_cfg):
     return c
 
 
+def parse_n_points(n_points_str):
+    # support "2-21" or "2,4,8,12"
+    pts = []
+    for part in n_points_str.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            lo = int(lo); hi = int(hi)
+            pts.extend(list(range(lo, hi + 1)))
+        else:
+            pts.append(int(part))
+    return sorted(set(pts))
+
+
 def load_existing_rows(csv_path: Path):
     if not csv_path.exists():
         return []
@@ -78,7 +94,8 @@ def main():
     parser.add_argument("--results-dir", default="../results")
     parser.add_argument("--family", choices=list(EXPS.keys()), required=True)
     parser.add_argument("--exp", default="", help="Optional single experiment name")
-    parser.add_argument("--n-points", default="2,4,8,12,16,20")
+    # ICL length 1..20 => n_points 2..21
+    parser.add_argument("--n-points", default="2-21")
     parser.add_argument("--num-eval-examples", type=int, default=6400)
     parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
@@ -87,15 +104,10 @@ def main():
     out_dir = results_dir / "_icl_curves"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    n_points_list = [int(x.strip()) for x in args.n_points.split(",") if x.strip()]
+    n_points_list = parse_n_points(args.n_points)
     csv_path = out_dir / "compare_mix_noise2_summary.csv"
 
-    existing = load_existing_rows(csv_path)
-    seen = set()
-    for r in existing:
-        seen.add((r["exp"], r["task"], int(r["icl_len"])))
-
-    rows_to_add = []
+    rows = []
 
     exp_list = EXPS[args.family]
     if args.exp:
@@ -137,8 +149,6 @@ def main():
 
             for n_points in n_points_list:
                 icl_len = n_points - 1
-                if (exp, task_label, icl_len) in seen:
-                    continue
                 metrics = eval_model(
                     model,
                     task_name=task_name,
@@ -152,7 +162,7 @@ def main():
                 )
                 last_val = metrics["mean"][-1]
                 err = last_val
-                rows_to_add.append({
+                rows.append({
                     "family": args.family,
                     "exp": exp,
                     "task": task_label,
@@ -160,26 +170,20 @@ def main():
                     "error": float(err),
                     "run_dir": str(rd),
                 })
-                seen.add((exp, task_label, icl_len))
 
-        # append rows after each experiment to avoid losing progress
-        if rows_to_add:
-            write_header = not csv_path.exists()
-            with csv_path.open("a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(
-                    f, fieldnames=["family", "exp", "task", "icl_len", "error", "run_dir"]
-                )
-                if write_header:
-                    writer.writeheader()
-                writer.writerows(rows_to_add)
-            rows_to_add = []
+    # overwrite CSV with fresh results (keep other families if present)
+    existing = load_existing_rows(csv_path)
+    kept = [r for r in existing if r.get("family") != args.family]
+    merged = kept + rows
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["family", "exp", "task", "icl_len", "error", "run_dir"]
+        )
+        writer.writeheader()
+        writer.writerows(merged)
 
     # plot per noise level for this family
-    data = load_existing_rows(csv_path)
-    if not data:
-        return
-    # filter family
-    data = [r for r in data if r["family"] == args.family]
+    data = [r for r in rows if r["family"] == args.family]
     if not data:
         return
 
