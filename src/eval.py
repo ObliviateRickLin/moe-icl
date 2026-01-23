@@ -54,7 +54,11 @@ def get_model_from_run(run_path, step=-1, only_conf=False):
 
 def eval_batch(model, task_sampler, xs, xs_p=None):
     task = task_sampler()
-    if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm", "EncoderTF"]:
+    # Allow forcing GPU evaluation (useful for HF decoders on remote GPUs)
+    force_cuda = os.environ.get("EVAL_FORCE_CUDA", "0") == "1"
+    model_name = getattr(model, "name", "")
+    prefix = model_name.split("_")[0] if model_name else ""
+    if torch.cuda.is_available() and (force_cuda or prefix in ["gpt2", "lstm", "EncoderTF", "llama", "qwen", "gemma"]):
         device = "cuda"
     else:
         device = "cpu"
