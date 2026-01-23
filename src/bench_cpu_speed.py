@@ -16,7 +16,7 @@ def _make_batches(device, batch_size, n_points, n_dims, num_batches):
     return batches
 
 
-def _bench_model(model, batches, steps, warmup, tasks_per_step):
+def _bench_model(model, batches, steps, warmup, tasks_per_step, device):
     model.train()
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
 
@@ -30,6 +30,8 @@ def _bench_model(model, batches, steps, warmup, tasks_per_step):
         opt.step()
 
     # Timed
+    if device.type == "cuda":
+        torch.cuda.synchronize()
     start = time.perf_counter()
     total_iters = steps * max(tasks_per_step, 1)
     for i in range(total_iters):
@@ -39,6 +41,8 @@ def _bench_model(model, batches, steps, warmup, tasks_per_step):
         loss = (out - ys).pow(2).mean()
         loss.backward()
         opt.step()
+        if device.type == "cuda":
+            torch.cuda.synchronize()
     end = time.perf_counter()
 
     # Return seconds per "training step" (which may include multiple tasks)
@@ -60,9 +64,12 @@ def run():
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--tasks-per-step", type=int, default=1)
     parser.add_argument("--widths", type=str, default="64,128,256")
+    parser.add_argument("--device", type=str, default="cpu", choices=["cpu", "cuda"])
     args = parser.parse_args()
 
-    device = torch.device("cpu")
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("CUDA not available: install a CUDA-enabled PyTorch or use --device cpu")
+    device = torch.device(args.device)
     widths = [int(x) for x in args.widths.split(",") if x.strip()]
 
     print("CPU benchmark (forward+backward+step)")
@@ -92,7 +99,7 @@ def run():
             n_head=n_head,
             use_moe=False,
         ).to(device)
-        sec = _bench_model(gpt, batches, args.steps, args.warmup, args.tasks_per_step)
+        sec = _bench_model(gpt, batches, args.steps, args.warmup, args.tasks_per_step, device)
         print(f"{'gpt2_hf':<28} {n_embd:>5} {n_head:>5} {sec:>10.4f}")
 
         # LLaMA-style decoder
@@ -118,7 +125,7 @@ def run():
             noise_scale=1.0,
             max_seq_len=None,
         ).to(device)
-        sec = _bench_model(llama, batches, args.steps, args.warmup, args.tasks_per_step)
+        sec = _bench_model(llama, batches, args.steps, args.warmup, args.tasks_per_step, device)
         print(f"{'llama_swiglu':<28} {n_embd:>5} {n_head:>5} {sec:>10.4f}")
 
 
