@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import inspect
 from transformers import GPT2Model, GPT2Config
 from tqdm import tqdm
 from sklearn.svm import LinearSVC
@@ -12,82 +13,32 @@ from sklearn.linear_model import Ridge
 
 from base_models import NeuralNetwork, ParallelNetworks
 from moe import MoELayer
-from llama_models import LlamaDecoderModel, QwenDecoderModel, DeepSeekDecoderModel
 
 import pdb
 
 
 def build_model(conf):
     if conf.family == "gpt2":
+        moe_layers = getattr(conf, "moe_layers", None)
+        use_moe = getattr(conf, "use_moe", False) or (moe_layers is not None and len(moe_layers) > 0)
         model = TransformerModel(
             n_dims=conf.n_dims,
             n_positions=conf.n_positions,
             n_embd=conf.n_embd,
             n_layer=conf.n_layer,
             n_head=conf.n_head,
-            use_moe=getattr(conf, "use_moe", False),
+            use_moe=use_moe,
             num_experts=getattr(conf, "num_experts", 4),
             top_k=getattr(conf, "top_k", 1),
             seq_level_routing=getattr(conf, "seq_level_routing", False),
+            moe_layers=moe_layers,
             aux_loss_coef=getattr(conf, "aux_loss_coef", 0.01),
             router_noise=getattr(conf, "router_noise", True),
             noise_scale=getattr(conf, "noise_scale", 1.0),
             mlp_hidden_mult=getattr(conf, "mlp_hidden_mult", 4),
         )
-    elif conf.family in ["llama", "qwen", "deepseek"]:
-        # LLaMA/Qwen/DeepSeek-style decoder-only models (from-scratch)
-        n_kv_head = getattr(conf, "n_kv_head", None)
-        mlp_hidden_mult = getattr(conf, "mlp_hidden_mult", 4)
-        rmsnorm_eps = getattr(conf, "rmsnorm_eps", 1e-6)
-        use_rope = getattr(conf, "use_rope", False)
-        rope_theta = getattr(conf, "rope_theta", 10000.0)
-        qkv_bias = getattr(conf, "qkv_bias", False)
-        mlp_bias = getattr(conf, "mlp_bias", False)
-        max_seq_len = getattr(conf, "max_seq_len", None)
-
-        # MoE defaults
-        use_moe = getattr(conf, "use_moe", False)
-        num_experts = getattr(conf, "num_experts", 4)
-        top_k = getattr(conf, "top_k", 1)
-        seq_level_routing = getattr(conf, "seq_level_routing", False)
-        aux_loss_coef = getattr(conf, "aux_loss_coef", 0.01)
-        router_noise = getattr(conf, "router_noise", True)
-        noise_scale = getattr(conf, "noise_scale", 1.0)
-
-        common_kwargs = dict(
-            n_dims=conf.n_dims,
-            n_positions=conf.n_positions,
-            n_embd=conf.n_embd,
-            n_layer=conf.n_layer,
-            n_head=conf.n_head,
-            n_kv_head=n_kv_head,
-            mlp_hidden_mult=mlp_hidden_mult,
-            rmsnorm_eps=rmsnorm_eps,
-            use_rope=use_rope,
-            rope_theta=rope_theta,
-            qkv_bias=qkv_bias,
-            mlp_bias=mlp_bias,
-            use_moe=use_moe,
-            num_experts=num_experts,
-            top_k=top_k,
-            seq_level_routing=seq_level_routing,
-            aux_loss_coef=aux_loss_coef,
-            router_noise=router_noise,
-            noise_scale=noise_scale,
-            max_seq_len=max_seq_len,
-        )
-        if conf.family == "llama":
-            model = LlamaDecoderModel(**common_kwargs)
-        elif conf.family == "qwen":
-            # Qwen-like: enable qkv bias by default
-            if "qkv_bias" not in conf.keys():
-                common_kwargs["qkv_bias"] = True
-            model = QwenDecoderModel(**common_kwargs)
-        else:
-            # DeepSeek-like: default to GQA if n_kv_head not specified
-            if n_kv_head is None:
-                common_kwargs["n_kv_head"] = max(1, conf.n_head // 2)
-            model = DeepSeekDecoderModel(**common_kwargs)
+    elif conf.family in ["llama_hf", "qwen_hf", "gemma_hf"]:
+        model = build_hf_decoder_model(conf, conf.family)
     elif conf.family == "EncoderTF":
         # backward compatible defaults
         if 'encoder_activation' not in conf.keys():
@@ -95,7 +46,8 @@ def build_model(conf):
         if 'normalize_attn' not in conf.keys():
             conf.normalize_attn = True
         # MoE defaults
-        use_moe = getattr(conf, 'use_moe', False)
+        moe_layers = getattr(conf, "moe_layers", None)
+        use_moe = getattr(conf, 'use_moe', False) or (moe_layers is not None and len(moe_layers) > 0)
         num_experts = getattr(conf, 'num_experts', 4)
         top_k = getattr(conf, 'top_k', 1)
         seq_level_routing = getattr(conf, 'seq_level_routing', False)
@@ -115,12 +67,245 @@ def build_model(conf):
             num_experts=num_experts,
             top_k=top_k,
             seq_level_routing=seq_level_routing,
+            moe_layers=moe_layers,
             aux_loss_coef=aux_loss_coef,
             router_noise=router_noise,
             noise_scale=noise_scale,
         )
     else:
         raise NotImplementedError
+
+    return model
+
+
+def _filter_kwargs_for_init(cls, kwargs):
+    try:
+        sig = inspect.signature(cls.__init__)
+        return {k: v for k, v in kwargs.items() if k in sig.parameters}
+    except (ValueError, TypeError):
+        return kwargs
+
+
+def _get_hf_classes(family):
+    import transformers as tf
+
+    mapping = {
+        "llama_hf": ("LlamaConfig", "LlamaModel"),
+        "qwen_hf": ("Qwen2Config", "Qwen2Model"),
+        "gemma_hf": ("GemmaConfig", "GemmaModel"),
+    }
+    config_name, model_name = mapping[family]
+    config_cls = getattr(tf, config_name, None)
+    model_cls = getattr(tf, model_name, None)
+    if config_cls is None or model_cls is None:
+        raise RuntimeError(
+            f"transformers is missing {config_name}/{model_name}. "
+            "Please upgrade transformers on this environment."
+        )
+    return config_cls, model_cls
+
+
+def _get_hf_layers(backbone):
+    if hasattr(backbone, "layers"):
+        return backbone.layers
+    if hasattr(backbone, "model") and hasattr(backbone.model, "layers"):
+        return backbone.model.layers
+    if hasattr(backbone, "decoder") and hasattr(backbone.decoder, "layers"):
+        return backbone.decoder.layers
+    if hasattr(backbone, "transformer") and hasattr(backbone.transformer, "h"):
+        return backbone.transformer.h
+    return None
+
+
+class HFMoEWrapper(nn.Module):
+    def __init__(
+        self,
+        n_embd,
+        num_experts=4,
+        top_k=1,
+        seq_level_routing=False,
+        aux_loss_coef=0.01,
+        router_noise=True,
+        noise_scale=1.0,
+        hidden_mult=4,
+    ):
+        super().__init__()
+        self.moe = MoELayer(
+            n_embd=n_embd,
+            num_experts=num_experts,
+            top_k=top_k,
+            seq_level_routing=seq_level_routing,
+            aux_loss_coef=aux_loss_coef,
+            router_noise=router_noise,
+            noise_scale=noise_scale,
+            hidden_mult=hidden_mult,
+        )
+        self.last_aux_loss = None
+
+    def forward(self, x):
+        out, aux_loss, _ = self.moe(x)
+        self.last_aux_loss = aux_loss
+        return out
+
+
+class HFDecoderWrapper(nn.Module):
+    def __init__(
+        self,
+        backbone,
+        name,
+        n_dims,
+        n_positions,
+        n_embd,
+        use_moe=False,
+        num_experts=None,
+        top_k=None,
+        seq_level_routing=None,
+        moe_layers=None,
+        aux_loss_coef=None,
+        router_noise=None,
+        noise_scale=None,
+        mlp_hidden_mult=None,
+    ):
+        super().__init__()
+        self.name = name
+        self.n_positions = n_positions
+        self.n_dims = n_dims
+        self.n_embd = n_embd
+        self.moe_layers = set(moe_layers) if moe_layers is not None else None
+        self.use_moe = use_moe or (self.moe_layers is not None and len(self.moe_layers) > 0)
+        # Track MoE hyperparams for analysis/debugging
+        self.num_experts = num_experts
+        self.top_k = top_k
+        self.seq_level_routing = seq_level_routing
+        self.moe_layers_list = moe_layers
+        self.aux_loss_coef = aux_loss_coef
+        self.router_noise = router_noise
+        self.noise_scale = noise_scale
+        self.mlp_hidden_mult = mlp_hidden_mult
+
+        self._read_in = nn.Linear(n_dims, n_embd)
+        self._backbone = backbone
+        self._read_out = nn.Linear(n_embd, 1)
+
+        self._layers = _get_hf_layers(self._backbone)
+        if self._layers is None:
+            raise RuntimeError("Could not locate HF decoder layers for MoE wiring.")
+
+    @staticmethod
+    def _combine(xs_b, ys_b):
+        bsize, points, dim = xs_b.shape
+        ys_b_wide = torch.cat(
+            (
+                ys_b.view(bsize, points, 1),
+                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
+            ),
+            axis=2,
+        )
+        zs = torch.stack((xs_b, ys_b_wide), dim=2)
+        zs = zs.view(bsize, 2 * points, dim)
+        return zs
+
+    def forward(self, xs, ys, inds=None, return_aux_loss: bool = False):
+        if inds is None:
+            inds = torch.arange(ys.shape[1], device=ys.device)
+        else:
+            inds = torch.tensor(inds, device=ys.device)
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+
+        zs = self._combine(xs, ys)
+        embeds = self._read_in(zs)
+        output = self._backbone(inputs_embeds=embeds).last_hidden_state
+        prediction = self._read_out(output)
+        out = prediction[:, ::2, 0][:, inds]
+
+        if return_aux_loss:
+            aux_loss = out.new_tensor(0.0)
+            if self.use_moe:
+                for layer in self._layers:
+                    mlp = getattr(layer, "mlp", None)
+                    if mlp is not None and getattr(mlp, "last_aux_loss", None) is not None:
+                        aux_loss = aux_loss + mlp.last_aux_loss
+            return out, aux_loss
+        return out
+
+
+def build_hf_decoder_model(conf, family):
+    config_cls, model_cls = _get_hf_classes(family)
+
+    n_kv_head = getattr(conf, "n_kv_head", None)
+    mlp_hidden_mult = getattr(conf, "mlp_hidden_mult", 4)
+    rmsnorm_eps = getattr(conf, "rmsnorm_eps", 1e-6)
+    rope_theta = getattr(conf, "rope_theta", 10000.0)
+    moe_layers = getattr(conf, "moe_layers", None)
+    use_moe = getattr(conf, "use_moe", False) or (moe_layers is not None and len(moe_layers) > 0)
+    num_experts = getattr(conf, "num_experts", 4)
+    top_k = getattr(conf, "top_k", 1)
+    seq_level_routing = getattr(conf, "seq_level_routing", False)
+    aux_loss_coef = getattr(conf, "aux_loss_coef", 0.01)
+    router_noise = getattr(conf, "router_noise", True)
+    noise_scale = getattr(conf, "noise_scale", 1.0)
+
+    config_kwargs = dict(
+        vocab_size=32000,
+        hidden_size=conf.n_embd,
+        intermediate_size=conf.n_embd * mlp_hidden_mult,
+        num_hidden_layers=conf.n_layer,
+        num_attention_heads=conf.n_head,
+        num_key_value_heads=n_kv_head or conf.n_head,
+        max_position_embeddings=2 * conf.n_positions,
+        rms_norm_eps=rmsnorm_eps,
+        rope_theta=rope_theta,
+        use_cache=False,
+        attention_dropout=0.0,
+        hidden_dropout=0.0,
+        dropout=0.0,
+        bos_token_id=1,
+        eos_token_id=2,
+        pad_token_id=0,
+    )
+    config = config_cls(**_filter_kwargs_for_init(config_cls, config_kwargs))
+    # Ensure dropout-like fields are zeroed when supported by the config
+    for key in ("attention_dropout", "hidden_dropout", "dropout"):
+        if hasattr(config, key):
+            setattr(config, key, 0.0)
+    backbone = model_cls(config)
+
+    name = f"{family}_embd={conf.n_embd}_layer={conf.n_layer}_head={conf.n_head}"
+    model = HFDecoderWrapper(
+        backbone=backbone,
+        name=name,
+        n_dims=conf.n_dims,
+        n_positions=conf.n_positions,
+        n_embd=conf.n_embd,
+        use_moe=use_moe,
+        num_experts=num_experts,
+        top_k=top_k,
+        seq_level_routing=seq_level_routing,
+        moe_layers=moe_layers,
+        aux_loss_coef=aux_loss_coef,
+        router_noise=router_noise,
+        noise_scale=noise_scale,
+        mlp_hidden_mult=mlp_hidden_mult,
+    )
+
+    if use_moe:
+        for idx, layer in enumerate(model._layers):
+            use_moe_this_layer = (model.moe_layers is None) or (idx in model.moe_layers)
+            if not use_moe_this_layer:
+                continue
+            if not hasattr(layer, "mlp"):
+                raise RuntimeError(f"Layer missing mlp for family {family}")
+            layer.mlp = HFMoEWrapper(
+                n_embd=conf.n_embd,
+                num_experts=num_experts,
+                top_k=top_k,
+                seq_level_routing=seq_level_routing,
+                aux_loss_coef=aux_loss_coef,
+                router_noise=router_noise,
+                noise_scale=noise_scale,
+                hidden_mult=mlp_hidden_mult,
+            )
 
     return model
 
@@ -199,11 +384,13 @@ class EncoderTransformer(nn.Module):
     def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4,
                  activation="relu", normalize_attn=True, mlp=True, layernorm=True,
                  use_moe=False, num_experts=4, top_k=1, seq_level_routing=False,
+                 moe_layers=None,
                  aux_loss_coef=0.01, router_noise=True, noise_scale=1.0):
         super(EncoderTransformer, self).__init__()
         
         # MoE config
-        self.use_moe = use_moe
+        self.moe_layers = set(moe_layers) if moe_layers is not None else None
+        self.use_moe = use_moe or (self.moe_layers is not None and len(self.moe_layers) > 0)
         self.num_experts = num_experts
         self.top_k = top_k
         self.seq_level_routing = seq_level_routing
@@ -211,7 +398,7 @@ class EncoderTransformer(nn.Module):
         self.router_noise = router_noise
         self.noise_scale = noise_scale
         
-        moe_suffix = f"_moe{num_experts}" if use_moe else ""
+        moe_suffix = f"_moe{num_experts}" if self.use_moe else ""
         self.name = f"EncoderTF_embd={n_embd}_layer={n_layer}_head={n_head}{moe_suffix}"
 
         # configs
@@ -239,8 +426,11 @@ class EncoderTransformer(nn.Module):
             self._values.append(nn.Linear(n_embd, n_embd, bias=False))
             self._lns_1.append(nn.LayerNorm([self.n_embd]))
             
-            # MoE or standard FFN
-            if use_moe:
+            # MoE or standard FFN (optionally per-layer)
+            use_moe_this_layer = (self.moe_layers is None and self.use_moe) or (
+                self.moe_layers is not None and i in self.moe_layers
+            )
+            if use_moe_this_layer:
                 self._mlps.append(
                     MoELayer(
                         n_embd=n_embd,
@@ -302,7 +492,7 @@ class EncoderTransformer(nn.Module):
                 H = ln1(H)
 
             if self.mlp:
-                if self.use_moe:
+                if isinstance(mlp, MoELayer):
                     mlp_out, aux_loss, _ = mlp(H)
                     H = H + mlp_out
                     total_aux_loss = total_aux_loss + aux_loss
@@ -368,6 +558,7 @@ class TransformerModel(nn.Module):
         num_experts=4,
         top_k=1,
         seq_level_routing=False,
+        moe_layers=None,
         aux_loss_coef=0.01,
         router_noise=True,
         noise_scale=1.0,
@@ -391,10 +582,14 @@ class TransformerModel(nn.Module):
         self._read_in = nn.Linear(n_dims, n_embd)
         self._backbone = GPT2Model(configuration)
         self._read_out = nn.Linear(n_embd, 1)
-        self.use_moe = use_moe
+        self.moe_layers = set(moe_layers) if moe_layers is not None else None
+        self.use_moe = use_moe or (self.moe_layers is not None and len(self.moe_layers) > 0)
 
-        if use_moe:
-            for block in self._backbone.h:
+        if self.use_moe:
+            for idx, block in enumerate(self._backbone.h):
+                use_moe_this_layer = (self.moe_layers is None) or (idx in self.moe_layers)
+                if not use_moe_this_layer:
+                    continue
                 block.mlp = GPT2MoEWrapper(
                     n_embd=n_embd,
                     num_experts=num_experts,

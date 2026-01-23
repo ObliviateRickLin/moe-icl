@@ -105,7 +105,8 @@ def main():
         )
         task_samplers.append(ts)
     
-    use_moe = getattr(conf.model, 'use_moe', False)
+    moe_layers = getattr(conf.model, "moe_layers", None)
+    use_moe = getattr(conf.model, 'use_moe', False) or (moe_layers is not None and len(moe_layers) > 0)
     train_steps = conf.training.train_steps
     batch_size = conf.training.batch_size
     n_positions = conf.model.n_positions

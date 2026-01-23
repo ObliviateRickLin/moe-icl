@@ -1,5 +1,5 @@
 """
-CPU sanity checks for new decoder model families (llama/qwen/deepseek).
+CPU sanity checks for decoder model families (llama/qwen + HF variants).
 Runs a tiny forward pass with and without MoE to verify shapes and aux_loss.
 """
 
@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from models import build_model
 
 
-def _make_conf(family, use_moe=False, qkv_bias=False, n_kv_head=None):
+def _make_conf(family, use_moe=False, qkv_bias=False, n_kv_head=None, moe_layers=None):
     conf = SimpleNamespace(
         family=family,
         n_dims=8,
@@ -27,6 +27,7 @@ def _make_conf(family, use_moe=False, qkv_bias=False, n_kv_head=None):
         num_experts=4,
         top_k=1,
         seq_level_routing=False,
+        moe_layers=moe_layers,
         aux_loss_coef=0.01,
         router_noise=True,
         noise_scale=1.0,
@@ -35,7 +36,7 @@ def _make_conf(family, use_moe=False, qkv_bias=False, n_kv_head=None):
     return conf
 
 
-def _run_one(family, qkv_bias=False, n_kv_head=None):
+def _run_one(family, qkv_bias=False, n_kv_head=None, moe_layers=None):
     xs = torch.randn(2, 4, 8)
     ys = torch.randn(2, 4)
 
@@ -51,8 +52,17 @@ def _run_one(family, qkv_bias=False, n_kv_head=None):
         out, aux = model_moe(xs, ys, return_aux_loss=True)
     print(f"{family} moe out shape:", out.shape, "aux:", float(aux))
 
+    if moe_layers is not None:
+        conf_layered = _make_conf(
+            family, use_moe=False, qkv_bias=qkv_bias, n_kv_head=n_kv_head, moe_layers=moe_layers
+        )
+        model_layered = build_model(conf_layered)
+        with torch.no_grad():
+            out, aux = model_layered(xs, ys, return_aux_loss=True)
+        print(f"{family} moe_layers={moe_layers} out shape:", out.shape, "aux:", float(aux))
+
 
 if __name__ == "__main__":
-    _run_one("llama", qkv_bias=False, n_kv_head=None)
-    _run_one("qwen", qkv_bias=True, n_kv_head=None)
-    _run_one("deepseek", qkv_bias=False, n_kv_head=2)
+    _run_one("llama_hf", qkv_bias=False, n_kv_head=None, moe_layers=[1])
+    _run_one("qwen_hf", qkv_bias=True, n_kv_head=None, moe_layers=[1])
+    _run_one("gemma_hf", qkv_bias=False, n_kv_head=None, moe_layers=[1])

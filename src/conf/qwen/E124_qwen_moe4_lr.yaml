@@ -1,0 +1,27 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  tasks:
+  - name: linear_regression
+    kwargs:
+      normalize_w: True
+model:
+  family: qwen_hf
+  n_dims: 20
+  n_positions: 21
+  n_embd: 64
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 1e-06
+  use_moe: True
+  num_experts: 4
+  top_k: 1
+  aux_loss_coef: 0.001
+  router_noise: True
+  noise_scale: 1.0
+out_dir: ../results/E124_qwen_moe4_lr
+wandb:
+  project: moe-icl
+  name: E124_qwen_moe4_lr
+  entity: jinruilin-aijobtech

@@ -15,13 +15,13 @@ from funcy import merge
 
 
 model_schema = {
-    "family": merge(tstring, allowed(["gpt2", "lstm", "EncoderTF", "llama", "qwen", "deepseek"])),
+    "family": merge(tstring, allowed(["gpt2", "lstm", "EncoderTF", "llama_hf", "qwen_hf", "gemma_hf"])),
     "n_positions": merge(tinteger, required),  # maximum context length
     "n_dims": merge(tinteger, required),  # latent dimension
     "n_embd": merge(tinteger, required),
     "n_layer": merge(tinteger, required),
     "n_head": merge(tinteger, required),
-    # LLaMA/Qwen/DeepSeek decoder-specific options
+    # Decoder-specific options (HF LLaMA/Qwen/Gemma)
     "n_kv_head": merge(tinteger, nullable, default(None)),
     "mlp_hidden_mult": merge(tinteger, default(4)),
     "rmsnorm_eps": merge(tfloat, default(1e-6)),
@@ -37,6 +37,7 @@ model_schema = {
     "num_experts": merge(tinteger, default(4)),
     "top_k": merge(tinteger, default(1)),
     "seq_level_routing": merge(tboolean, default(False)),
+    "moe_layers": merge(stlist(tinteger), nullable, default(None)),
     "aux_loss_coef": merge(tfloat, default(0.01)),
     "router_noise": merge(tboolean, default(True)),  # ST-MoE noisy routing
     "noise_scale": merge(tfloat, default(1.0)),  # Uniform(0, noise_scale)

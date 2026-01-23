@@ -122,7 +122,7 @@ def analyze_experiment(run_dir: Path, batches_per_task: int, device: str):
     batch_size = training_cfg.get("batch_size", 64)
     data_sampler = get_data_sampler(training_cfg.get("data", "gaussian"), n_dims=n_dims)
 
-    use_moe = bool(model_cfg.get("use_moe", False))
+    use_moe = bool(model_cfg.get("use_moe", False) or model_cfg.get("moe_layers"))
     num_layers = len(model._mlps)
     num_experts = model_cfg.get("num_experts", 0)
 

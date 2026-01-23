@@ -82,7 +82,10 @@ def _collect_counts(
     device,
 ):
     n_layer = len(model._mlps)
-    num_experts = model._mlps[0].num_experts
+    moe_indices = [i for i, mlp in enumerate(model._mlps) if hasattr(mlp, "router")]
+    if not moe_indices:
+        return None, None
+    num_experts = model._mlps[moe_indices[0]].num_experts
     counts = np.zeros((n_layer, len(tasks), num_experts), dtype=np.int64)
     totals = np.zeros((n_layer, len(tasks)), dtype=np.int64)
 
@@ -123,15 +126,18 @@ def _collect_counts(
                     if model.layernorm:
                         H = ln1(H)
 
-                    # MoE routing
-                    mlp_out, _, routing = mlp(H, return_routing_info=True)
-                    top_k = routing["top_k_indices"]  # (B, S, k)
-                    flat = top_k.reshape(-1)
-                    bc = torch.bincount(flat, minlength=num_experts)
-                    counts[layer_idx, t_idx] += bc.detach().cpu().numpy()
-                    totals[layer_idx, t_idx] += int(flat.numel())
+                    if hasattr(mlp, "router"):
+                        # MoE routing
+                        mlp_out, _, routing = mlp(H, return_routing_info=True)
+                        top_k = routing["top_k_indices"]  # (B, S, k)
+                        flat = top_k.reshape(-1)
+                        bc = torch.bincount(flat, minlength=num_experts)
+                        counts[layer_idx, t_idx] += bc.detach().cpu().numpy()
+                        totals[layer_idx, t_idx] += int(flat.numel())
 
-                    H = H + mlp_out
+                        H = H + mlp_out
+                    else:
+                        H = H + mlp(H)
                     if model.layernorm:
                         H = ln2(H)
 
@@ -141,16 +147,23 @@ def _collect_counts(
 def _weight_cosine_stats(model):
     stats = []
     for layer_idx, mlp in enumerate(model._mlps):
+        if not hasattr(mlp, "router"):
+            stats.append(
+                {
+                    "layer": layer_idx,
+                    "weight_cos_mean": 0.0,
+                    "weight_cos_min": 0.0,
+                    "weight_cos_max": 0.0,
+                }
+            )
+            continue
         num_experts = mlp.num_experts
-        # Flatten expert weights
         w1 = mlp.w1.detach().cpu().reshape(num_experts, -1)
         w2 = mlp.w2.detach().cpu().reshape(num_experts, -1)
         vec = torch.cat([w1, w2], dim=1).numpy()
-        # Normalize
         norms = np.linalg.norm(vec, axis=1, keepdims=True) + 1e-12
         vec_n = vec / norms
         cos = vec_n @ vec_n.T
-        # Off-diagonal stats
         mask = ~np.eye(num_experts, dtype=bool)
         off = cos[mask]
         stats.append(
@@ -171,7 +184,7 @@ def analyze_experiment(run_dir: Path, batches_per_task: int, device: str):
 
     model_cfg = cfg.get("model", {})
     training_cfg = cfg.get("training", {})
-    if not model_cfg.get("use_moe", False):
+    if not (model_cfg.get("use_moe", False) or model_cfg.get("moe_layers")):
         return None
     if model_cfg.get("family") != "EncoderTF":
         return None
@@ -206,6 +219,8 @@ def analyze_experiment(run_dir: Path, batches_per_task: int, device: str):
         batches_per_task,
         device,
     )
+    if counts is None:
+        return None
     weight_stats = _weight_cosine_stats(model)
 
     num_experts = model_cfg["num_experts"]
@@ -218,6 +233,8 @@ def analyze_experiment(run_dir: Path, batches_per_task: int, device: str):
 
     for l in range(counts.shape[0]):
         counts_l = counts[l]
+        if totals[l].sum() <= 0:
+            continue
         total_l = counts_l.sum()
         if total_l == 0:
             continue

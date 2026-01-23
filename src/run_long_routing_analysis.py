@@ -77,8 +77,12 @@ def _task_label(task):
 
 def _collect_counts(model, tasks, data_sampler, n_dims, n_positions, batch_size, batches_per_task):
     n_layer = len(model._mlps)
-    num_experts = model._mlps[0].num_experts
+    moe_indices = [i for i, mlp in enumerate(model._mlps) if hasattr(mlp, "router")]
+    if not moe_indices:
+        return None, None
+    num_experts = model._mlps[moe_indices[0]].num_experts
     counts = np.zeros((n_layer, len(tasks), num_experts), dtype=np.int64)
+    totals = np.zeros((n_layer, len(tasks)), dtype=np.int64)
 
     with torch.no_grad():
         for t_idx, task in enumerate(tasks):
@@ -111,22 +115,36 @@ def _collect_counts(model, tasks, data_sampler, n_dims, n_positions, batch_size,
                     if model.layernorm:
                         H = ln1(H)
 
-                    _, _, routing = mlp(H, return_routing_info=True)
-                    top_k = routing["top_k_indices"].reshape(-1)
-                    bc = torch.bincount(top_k, minlength=num_experts)
-                    counts[layer_idx, t_idx] += bc.cpu().numpy()
+                    if hasattr(mlp, "router"):
+                        _, _, routing = mlp(H, return_routing_info=True)
+                        top_k = routing["top_k_indices"].reshape(-1)
+                        bc = torch.bincount(top_k, minlength=num_experts)
+                        counts[layer_idx, t_idx] += bc.cpu().numpy()
+                        totals[layer_idx, t_idx] += int(top_k.numel())
 
-                    mlp_out, _, _ = mlp(H)
-                    H = H + mlp_out
+                        mlp_out, _, _ = mlp(H)
+                        H = H + mlp_out
+                    else:
+                        H = H + mlp(H)
                     if model.layernorm:
                         H = ln2(H)
 
-    return counts
+    return counts, totals
 
 
 def _weight_cos_stats(model):
     stats = []
     for layer_idx, mlp in enumerate(model._mlps):
+        if not hasattr(mlp, "router"):
+            stats.append(
+                {
+                    "layer": layer_idx,
+                    "weight_cos_mean": 0.0,
+                    "weight_cos_min": 0.0,
+                    "weight_cos_max": 0.0,
+                }
+            )
+            continue
         num_experts = mlp.num_experts
         w1 = mlp.w1.detach().cpu().reshape(num_experts, -1)
         w2 = mlp.w2.detach().cpu().reshape(num_experts, -1)
@@ -151,7 +169,7 @@ def analyze_one(run_dir: Path, batches_per_task: int, out_dir: Path):
     cfg = _safe_load_yaml(run_dir / "config.yaml")
     model_cfg = cfg.get("model", {})
     training_cfg = cfg.get("training", {})
-    if not model_cfg.get("use_moe", False):
+    if not (model_cfg.get("use_moe", False) or model_cfg.get("moe_layers")):
         return None
     if model_cfg.get("family") != "EncoderTF":
         return None
@@ -173,9 +191,11 @@ def analyze_one(run_dir: Path, batches_per_task: int, out_dir: Path):
     batch_size = training_cfg.get("batch_size", 64)
     data_sampler = get_data_sampler(training_cfg.get("data", "gaussian"), n_dims=n_dims)
 
-    counts = _collect_counts(
+    counts, totals = _collect_counts(
         model, tasks, data_sampler, n_dims, n_positions, batch_size, batches_per_task
     )
+    if counts is None:
+        return None
     num_experts = model_cfg["num_experts"]
     task_labels = [_task_label(t) for t in tasks]
 
@@ -186,6 +206,8 @@ def analyze_one(run_dir: Path, batches_per_task: int, out_dir: Path):
     for l in range(counts.shape[0]):
         counts_l = counts[l]
         total_l = counts_l.sum()
+        if total_l <= 0:
+            continue
         p_e = counts_l.sum(axis=0) / (total_l + 1e-12)
         ent = _entropy(p_e) / (np.log(num_experts) + 1e-12)
         entropy_vals.append(ent)

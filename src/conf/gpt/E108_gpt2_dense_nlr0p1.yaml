@@ -1,0 +1,23 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  tasks:
+  - name: noisy_linear_regression
+    kwargs:
+      noise_std: 0.1
+      normalize_w: True
+model:
+  family: gpt2
+  n_dims: 20
+  n_positions: 21
+  n_embd: 64
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 1e-06
+  use_moe: False
+out_dir: ../results/E108_gpt2_dense_nlr0p1
+wandb:
+  project: moe-icl
+  name: E108_gpt2_dense_nlr0p1
+  entity: jinruilin-aijobtech

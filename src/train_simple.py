@@ -77,7 +77,8 @@ def main():
     task_sampler_01 = get_task_sampler('noisy_linear_regression', n_dims, batch_size, noise_std=0.1, normalize_w=True)
     task_sampler_05 = get_task_sampler('noisy_linear_regression', n_dims, batch_size, noise_std=0.5, normalize_w=True)
     
-    use_moe = moe_cfg.get('use_moe', False)
+    moe_layers = moe_cfg.get("moe_layers")
+    use_moe = moe_cfg.get('use_moe', False) or (moe_layers is not None and len(moe_layers) > 0)
     
     pbar = tqdm(range(args.steps))
     for step in pbar:

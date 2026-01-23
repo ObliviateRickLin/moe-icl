@@ -3,8 +3,8 @@ import time
 
 import torch
 
-from llama_models import LlamaDecoderModel
-from models import TransformerModel
+from models import TransformerModel, build_model
+from types import SimpleNamespace
 
 
 def _make_batches(device, batch_size, n_points, n_dims, num_batches):
@@ -102,8 +102,9 @@ def run():
         sec = _bench_model(gpt, batches, args.steps, args.warmup, args.tasks_per_step, device)
         print(f"{'gpt2_hf':<28} {n_embd:>5} {n_head:>5} {sec:>10.4f}")
 
-        # LLaMA-style decoder
-        llama = LlamaDecoderModel(
+        # HF LLaMA decoder
+        llama_conf = SimpleNamespace(
+            family="llama_hf",
             n_dims=args.n_dims,
             n_positions=args.n_points,
             n_embd=n_embd,
@@ -112,21 +113,20 @@ def run():
             n_kv_head=None,
             mlp_hidden_mult=4,
             rmsnorm_eps=1e-6,
-            use_rope=False,
             rope_theta=10000.0,
-            qkv_bias=False,
-            mlp_bias=False,
             use_moe=False,
             num_experts=4,
             top_k=1,
             seq_level_routing=False,
+            moe_layers=None,
             aux_loss_coef=0.0,
             router_noise=False,
             noise_scale=1.0,
-            max_seq_len=None,
-        ).to(device)
+        )
+        llama_conf.keys = lambda: llama_conf.__dict__.keys()
+        llama = build_model(llama_conf).to(device)
         sec = _bench_model(llama, batches, args.steps, args.warmup, args.tasks_per_step, device)
-        print(f"{'llama_swiglu':<28} {n_embd:>5} {n_head:>5} {sec:>10.4f}")
+        print(f"{'llama_hf':<28} {n_embd:>5} {n_head:>5} {sec:>10.4f}")
 
 
 if __name__ == "__main__":

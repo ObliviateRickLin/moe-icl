@@ -157,7 +157,8 @@ def train(model, args):
             loss_func = task.get_training_metric()
 
             encoder_decoder_mode = "encoder" if args.model.family == "EncoderTF" else "decoder"
-            use_moe = getattr(args.model, 'use_moe', False)
+            moe_layers = getattr(args.model, "moe_layers", None)
+            use_moe = getattr(args.model, 'use_moe', False) or (moe_layers is not None and len(moe_layers) > 0)
 
             if task_name == "sparse_linear_regression" and args.training.lasso_guided_opt:
                 w_b = task.w_b
@@ -263,7 +264,7 @@ def main(args):
 if __name__ == "__main__":
     parser = QuinineArgumentParser(schema=schema)
     args = parser.parse_quinfig()
-    assert args.model.family in ["gpt2", "lstm", "EncoderTF", "llama", "qwen", "deepseek"]
+    assert args.model.family in ["gpt2", "lstm", "EncoderTF", "llama_hf", "qwen_hf", "gemma_hf"]
     print(f"Running with: {args}")
 
     if not args.test_run:

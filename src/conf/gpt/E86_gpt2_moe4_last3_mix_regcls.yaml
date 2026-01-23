@@ -1,0 +1,31 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  tasks:
+  - name: linear_regression
+    kwargs:
+      normalize_w: True
+  - name: linear_classification
+    kwargs:
+      normalize_w: True
+model:
+  family: gpt2
+  n_dims: 20
+  n_positions: 21
+  n_embd: 64
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 1e-06
+  use_moe: True
+  num_experts: 4
+  top_k: 1
+  aux_loss_coef: 0.001
+  router_noise: True
+  noise_scale: 1.0
+  moe_layers: [9, 10, 11]
+out_dir: ../results/E86_gpt2_moe4_last3_mix_regcls
+wandb:
+  project: moe-icl
+  name: E86_gpt2_moe4_last3_mix_regcls
+  entity: jinruilin-aijobtech

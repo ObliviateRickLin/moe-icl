@@ -1,0 +1,28 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  tasks:
+  - name: linear_regression
+    kwargs:
+      normalize_w: True
+model:
+  family: llama_hf
+  n_dims: 20
+  n_positions: 21
+  n_embd: 64
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 1e-06
+  use_moe: True
+  num_experts: 4
+  top_k: 1
+  aux_loss_coef: 0.001
+  router_noise: True
+  noise_scale: 1.0
+  moe_layers: [9, 10, 11]
+out_dir: ../results/E116_llama_moe4_last3_lr
+wandb:
+  project: moe-icl
+  name: E116_llama_moe4_last3_lr
+  entity: jinruilin-aijobtech

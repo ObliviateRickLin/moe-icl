@@ -71,7 +71,7 @@ def analyze_exp(run_dir: Path, batches_per_task: int):
     model_cfg = cfg["model"]
     training_cfg = cfg["training"]
 
-    if not model_cfg.get("use_moe", False) or model_cfg.get("family") != "EncoderTF":
+    if not (model_cfg.get("use_moe", False) or model_cfg.get("moe_layers")) or model_cfg.get("family") != "EncoderTF":
         return None
 
     # build model
@@ -221,7 +221,7 @@ def main():
             rows = json.loads(overview.read_text(encoding="utf-8"))
             exps = []
             for r in rows:
-                if not r.get("use_moe"):
+                if not (r.get("use_moe") or r.get("moe_layers")):
                     continue
                 tasks = json.loads(r.get("tasks", "[]"))
                 if len(tasks) < args.min_tasks:
@@ -237,7 +237,7 @@ def main():
                     continue
                 cfg = load_config(rd)
                 model_cfg = cfg.get("model", {})
-                if not model_cfg.get("use_moe", False):
+                if not (model_cfg.get("use_moe", False) or model_cfg.get("moe_layers")):
                     continue
                 tasks = cfg.get("training", {}).get("tasks", []) or []
                 if len(tasks) < args.min_tasks:
