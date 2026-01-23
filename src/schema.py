@@ -3,12 +3,14 @@ from quinine import (
     tinteger,
     tfloat,
     tboolean,
+    tlist,
     stdict,
     tdict,
     default,
     required,
     allowed,
     nullable,
+    schema,
     stlist,
 )
 from funcy import merge
@@ -37,7 +39,8 @@ model_schema = {
     "num_experts": merge(tinteger, default(4)),
     "top_k": merge(tinteger, default(1)),
     "seq_level_routing": merge(tboolean, default(False)),
-    "moe_layers": merge(stlist(tinteger), nullable, default(None)),
+    # list of layer indices (0-based) that use MoE
+    "moe_layers": merge(tlist, schema(tinteger), nullable, default(None)),
     "aux_loss_coef": merge(tfloat, default(0.01)),
     "router_noise": merge(tboolean, default(True)),  # ST-MoE noisy routing
     "noise_scale": merge(tfloat, default(1.0)),  # Uniform(0, noise_scale)
