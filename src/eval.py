@@ -62,6 +62,13 @@ def eval_batch(model, task_sampler, xs, xs_p=None):
         device = "cuda"
     else:
         device = "cpu"
+    # Ensure model and inputs are on the same device
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device("cpu")
+    if torch.device(device) != model_device:
+        model = model.to(device)
 
     if xs_p is None:
         ys = task.evaluate(xs)
