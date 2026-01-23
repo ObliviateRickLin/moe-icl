@@ -44,15 +44,33 @@ EXPS = {
 }
 
 
-def latest_run_dir_with_state(exp_dir: Path):
-    run_dirs = []
+def latest_run_dir_with_ckpt(exp_dir: Path, prefer_step: int):
+    """
+    Prefer a fixed-step checkpoint (model_{prefer_step}.pt) if present.
+    Fall back to state.pt otherwise.
+    """
+    candidates = []
     for cfg in exp_dir.rglob("config.yaml"):
         rd = cfg.parent
-        if (rd / "state.pt").exists():
-            run_dirs.append(rd)
-    if not run_dirs:
+        model_path = rd / f"model_{prefer_step}.pt"
+        state_path = rd / "state.pt"
+
+        if model_path.exists():
+            candidates.append((1, model_path.stat().st_mtime, rd))
+        elif state_path.exists():
+            candidates.append((0, state_path.stat().st_mtime, rd))
+
+    if not candidates:
         return None
-    return max(run_dirs, key=lambda p: (p / "state.pt").stat().st_mtime)
+    # Prefer runs that have the fixed-step checkpoint; within that, take the latest.
+    return max(candidates, key=lambda t: (t[0], t[1]))[2]
+
+
+def select_ckpt_path(run_dir: Path, prefer_step: int) -> Path:
+    ckpt = run_dir / f"model_{prefer_step}.pt"
+    if ckpt.exists():
+        return ckpt
+    return run_dir / "state.pt"
 
 
 def build_conf(model_cfg):
@@ -96,6 +114,12 @@ def main():
     parser.add_argument("--exp", default="", help="Optional single experiment name")
     # ICL length 1..20 => n_points 2..21
     parser.add_argument("--n-points", default="2-21")
+    parser.add_argument(
+        "--prefer-model-step",
+        type=int,
+        default=10000,
+        help="Prefer loading model_{step}.pt if present; otherwise fall back to state.pt.",
+    )
     parser.add_argument("--num-eval-examples", type=int, default=6400)
     parser.add_argument("--batch-size", type=int, default=None)
     args = parser.parse_args()
@@ -117,7 +141,7 @@ def main():
 
     for exp in exp_list:
         exp_dir = results_dir / exp
-        rd = latest_run_dir_with_state(exp_dir)
+        rd = latest_run_dir_with_ckpt(exp_dir, args.prefer_model_step)
         if rd is None:
             print("skip", exp, "no state")
             continue
@@ -131,7 +155,8 @@ def main():
             continue
 
         model = build_model(build_conf(model_cfg))
-        st = torch.load(rd / "state.pt", map_location="cpu")
+        ckpt_path = select_ckpt_path(rd, args.prefer_model_step)
+        st = torch.load(ckpt_path, map_location="cpu")
         if isinstance(st, dict) and "model_state_dict" in st:
             st = st["model_state_dict"]
         model.load_state_dict(st, strict=False)
