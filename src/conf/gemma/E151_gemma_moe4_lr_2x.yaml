@@ -1,0 +1,38 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  curriculum:
+    dims:
+      start: 20
+      end: 40
+      inc: 1
+      interval: 2000
+    points:
+      start: 21
+      end: 41
+      inc: 2
+      interval: 2000
+  tasks:
+  - name: linear_regression
+    kwargs:
+      normalize_w: True
+model:
+  family: gemma_hf
+  n_dims: 40
+  n_positions: 41
+  n_embd: 64
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 0.000001
+  use_moe: True
+  num_experts: 4
+  top_k: 1
+  aux_loss_coef: 0.001
+  router_noise: True
+  noise_scale: 1.0
+out_dir: ../results/E151_gemma_moe4_lr_2x
+wandb:
+  project: moe-icl
+  name: E151_gemma_moe4_lr_2x
+  entity: jinruilin-aijobtech
