@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 
 from eval import eval_model
 from models import build_model
+from ckpt_utils import latest_run_dir, select_ckpt_path
 
 
 EXPS = {
@@ -42,35 +43,6 @@ EXPS = {
         "E101_gemma_moe4_last3_mix_noise2",
     ],
 }
-
-
-def latest_run_dir_with_ckpt(exp_dir: Path, prefer_step: int):
-    """
-    Prefer a fixed-step checkpoint (model_{prefer_step}.pt) if present.
-    Fall back to state.pt otherwise.
-    """
-    candidates = []
-    for cfg in exp_dir.rglob("config.yaml"):
-        rd = cfg.parent
-        model_path = rd / f"model_{prefer_step}.pt"
-        state_path = rd / "state.pt"
-
-        if model_path.exists():
-            candidates.append((1, model_path.stat().st_mtime, rd))
-        elif state_path.exists():
-            candidates.append((0, state_path.stat().st_mtime, rd))
-
-    if not candidates:
-        return None
-    # Prefer runs that have the fixed-step checkpoint; within that, take the latest.
-    return max(candidates, key=lambda t: (t[0], t[1]))[2]
-
-
-def select_ckpt_path(run_dir: Path, prefer_step: int) -> Path:
-    ckpt = run_dir / f"model_{prefer_step}.pt"
-    if ckpt.exists():
-        return ckpt
-    return run_dir / "state.pt"
 
 
 def build_conf(model_cfg):
@@ -117,8 +89,8 @@ def main():
     parser.add_argument(
         "--prefer-model-step",
         type=int,
-        default=100000,
-        help="Prefer loading model_{step}.pt if present; otherwise fall back to state.pt.",
+        default=300000,
+        help="Prefer loading model_{step}.pt if present; otherwise fall back to an earlier model_{k}.pt or state.pt.",
     )
     parser.add_argument("--num-eval-examples", type=int, default=6400)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -141,9 +113,9 @@ def main():
 
     for exp in exp_list:
         exp_dir = results_dir / exp
-        rd = latest_run_dir_with_ckpt(exp_dir, args.prefer_model_step)
+        rd = latest_run_dir(exp_dir, prefer_step=args.prefer_model_step)
         if rd is None:
-            print("skip", exp, "no state")
+            print("skip", exp, "no checkpoint")
             continue
 
         cfg = yaml.safe_load((rd / "config.yaml").open("r"))
@@ -155,7 +127,10 @@ def main():
             continue
 
         model = build_model(build_conf(model_cfg))
-        ckpt_path = select_ckpt_path(rd, args.prefer_model_step)
+        ckpt_path, _ = select_ckpt_path(rd, prefer_step=args.prefer_model_step)
+        if ckpt_path is None:
+            print("skip", exp, "no checkpoint file in", rd)
+            continue
         st = torch.load(ckpt_path, map_location="cpu")
         if isinstance(st, dict) and "model_state_dict" in st:
             st = st["model_state_dict"]
@@ -166,27 +141,33 @@ def main():
         batch_size = args.batch_size or training_cfg.get("batch_size", 64)
         data_name = training_cfg.get("data", "gaussian")
 
+        # Fast path: evaluate once at max_n_points, then slice the per-position mean curve.
+        max_n_points = max(n_points_list) if n_points_list else model_cfg.get("n_positions", 21)
+
         for task in tasks:
             task_name = task["name"]
             task_kwargs = task.get("kwargs", {}) or {}
             noise_std = task_kwargs.get("noise_std", None)
             task_label = f"{task_name}(noise_std={noise_std})"
 
+            metrics = eval_model(
+                model,
+                task_name=task_name,
+                data_name=data_name,
+                n_dims=n_dims,
+                n_points=max_n_points,
+                prompting_strategy="standard",
+                num_eval_examples=args.num_eval_examples,
+                batch_size=batch_size,
+                task_sampler_kwargs=task_kwargs,
+            )
+            mean_curve = metrics["mean"]
+
             for n_points in n_points_list:
-                icl_len = n_points - 1
-                metrics = eval_model(
-                    model,
-                    task_name=task_name,
-                    data_name=data_name,
-                    n_dims=n_dims,
-                    n_points=n_points,
-                    prompting_strategy="standard",
-                    num_eval_examples=args.num_eval_examples,
-                    batch_size=batch_size,
-                    task_sampler_kwargs=task_kwargs,
-                )
-                last_val = metrics["mean"][-1]
-                err = last_val
+                icl_len = int(n_points) - 1
+                if icl_len < 0 or icl_len >= len(mean_curve):
+                    continue
+                err = mean_curve[icl_len]
                 rows.append({
                     "family": args.family,
                     "exp": exp,
