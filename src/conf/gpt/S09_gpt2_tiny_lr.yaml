@@ -1,0 +1,22 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  tasks:
+  - name: linear_regression
+    kwargs:
+      normalize_w: True
+model:
+  family: gpt2
+  n_dims: 20
+  n_positions: 21
+  n_embd: 32
+  n_layer: 4
+  n_head: 4
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 0.000001
+  use_moe: False
+out_dir: ../results/S09_gpt2_tiny_lr
+wandb:
+  project: moe-icl
+  name: S09_gpt2_tiny_lr
+  entity: jinruilin-aijobtech
