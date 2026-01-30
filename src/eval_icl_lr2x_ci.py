@@ -53,6 +53,21 @@ EXPS = {
         "E151_gemma_moe4_lr_2x",
         "E152_gemma_moe4_last3_lr_2x",
     ],
+    # S-series: Dense GPT-2 scaling experiments for linear regression
+    "s_series": [
+        "S01_gpt2_w32_d6_lr",
+        "S02_gpt2_w64_d6_lr",
+        "S03_gpt2_w128_d6_lr",
+        "S04_gpt2_w256_d6_lr",
+        "S05_gpt2_w64_d2_lr",
+        "S06_gpt2_w64_d4_lr",
+        "S07_gpt2_w64_d8_lr",
+        "S08_gpt2_w64_d12_lr",
+        "S09_gpt2_tiny_lr",
+        "S10_gpt2_small_lr",
+        "S11_gpt2_medium_lr",
+        "S12_gpt2_large_lr",
+    ],
 }
 
 
