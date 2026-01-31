@@ -62,13 +62,19 @@ def eval_batch(model, task_sampler, xs, xs_p=None):
         device = "cuda"
     else:
         device = "cpu"
-    # Ensure model and inputs are on the same device
-    try:
-        model_device = next(model.parameters()).device
-    except StopIteration:
-        model_device = torch.device("cpu")
+    # Ensure model and inputs are on the same device.
+    # Some baselines in this repo are not nn.Modules and do not define parameters()/to().
+    model_device = torch.device("cpu")
+    params_fn = getattr(model, "parameters", None)
+    if callable(params_fn):
+        try:
+            model_device = next(params_fn()).device
+        except StopIteration:
+            model_device = torch.device("cpu")
     if torch.device(device) != model_device:
-        model = model.to(device)
+        to_fn = getattr(model, "to", None)
+        if callable(to_fn):
+            model = to_fn(device)
 
     if xs_p is None:
         ys = task.evaluate(xs)

@@ -1,0 +1,325 @@
+"""
+Conditional conformal diagnostics for ICL linear regression runs.
+
+This extends the existing split-conformal script by using the method from:
+  Chen, Cherian, Candès (2023) - "Conformal Prediction with Conditional Guarantees"
+via the `conditionalconformal` package (jjcherian/conditional-conformal).
+
+For each ICL length L we:
+  - sample evaluation episodes (xs, ys)
+  - compute model predictions yhat at each position
+  - fit conditional conformal on calibration examples using x_features at position L
+  - compute empirical test coverage and average interval width
+
+Default x_features: the query x at position L (shape n_dims).
+Default Phi: norm-binned one-hot (group conditional guarantees on ||x||).
+
+Optional RKHS component:
+  Pass --kernel (e.g. rbf) to enable the RKHS variant in jjcherian/conditional-conformal.
+  Note: the upstream implementation does not support --exact when kernel is enabled.
+
+Outputs (under results/_icl_curves/):
+  - compare_lr2x_condconf_summary_<family>_alpha0p05.csv
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+from pathlib import Path
+import warnings
+
+import numpy as np
+import torch
+import yaml
+
+from ckpt_utils import latest_run_dir, select_ckpt_path
+from models import build_model
+from samplers import get_data_sampler
+from tasks import get_task_sampler
+from uq.conditional_conformal import CondConfSymmetricAbs, InterceptPhi, LinearPhi, NormBinsPhi, split_indices
+
+
+EXPS = {
+    "gpt2": [
+        "E141_gpt2_dense_lr_2x",
+        "E142_gpt2_moe4_lr_2x",
+        "E143_gpt2_moe4_last3_lr_2x",
+    ],
+    "llama_hf": [
+        "E144_llama_dense_lr_2x",
+        "E145_llama_moe4_lr_2x",
+        "E146_llama_moe4_last3_lr_2x",
+    ],
+    "qwen_hf": [
+        "E147_qwen_dense_lr_2x",
+        "E148_qwen_moe4_lr_2x",
+        "E149_qwen_moe4_last3_lr_2x",
+    ],
+    "gemma_hf": [
+        "E150_gemma_dense_lr_2x",
+        "E151_gemma_moe4_lr_2x",
+        "E152_gemma_moe4_last3_lr_2x",
+    ],
+}
+
+
+def build_conf(model_cfg: dict):
+    class C:
+        pass
+
+    c = C()
+    for k, v in model_cfg.items():
+        setattr(c, k, v)
+    c.keys = lambda: c.__dict__.keys()
+    return c
+
+
+def _task_to_label(task_name: str, task_kwargs: dict) -> str:
+    if not task_kwargs:
+        return task_name
+    items = ",".join([f"{k}={task_kwargs[k]}" for k in sorted(task_kwargs.keys())])
+    return f"{task_name}({items})"
+
+
+@torch.no_grad()
+def collect_xyhat(
+    model,
+    *,
+    task_name: str,
+    task_kwargs: dict,
+    data_name: str,
+    n_dims: int,
+    n_points: int,
+    num_eval_examples: int,
+    batch_size: int,
+    device: str,
+):
+    """
+    Returns (xs, ys, yhat) as torch tensors on CPU:
+      xs: (N, n_points, n_dims)
+      ys: (N, n_points)
+      yhat: (N, n_points)
+    """
+    assert num_eval_examples % batch_size == 0
+    data_sampler = get_data_sampler(data_name, n_dims=n_dims)
+    task_sampler = get_task_sampler(task_name, n_dims, batch_size, **task_kwargs)
+
+    model = model.to(device).eval()
+    xs_all, ys_all, yhat_all = [], [], []
+    for _ in range(num_eval_examples // batch_size):
+        xs = data_sampler.sample_xs(n_points, batch_size, n_dims, device=device)
+        task = task_sampler(device=device)
+        ys = task.evaluate(xs)
+        yhat = model(xs, ys)
+        xs_all.append(xs.detach().cpu())
+        ys_all.append(ys.detach().cpu())
+        yhat_all.append(yhat.detach().cpu())
+    return torch.cat(xs_all, dim=0), torch.cat(ys_all, dim=0), torch.cat(yhat_all, dim=0)
+
+
+def _build_phi(name: str, num_bins: int) -> object:
+    if name == "intercept":
+        return InterceptPhi()
+    if name == "linear":
+        return LinearPhi(standardize=True)
+    if name == "norm_bins":
+        return NormBinsPhi(num_bins=num_bins)
+    raise SystemExit("--phi must be one of: intercept, linear, norm_bins")
+
+
+def main():
+    warnings.filterwarnings("ignore", category=FutureWarning, module=r"cvxpy\.atoms\.affine\.vec")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--results-dir", default="../results")
+    parser.add_argument(
+        "--run-dir",
+        default="",
+        help="Optional explicit run directory (contains config.yaml + model_*.pt/state.pt). "
+        "If set, --family/--exp are ignored.",
+    )
+    parser.add_argument("--family", choices=list(EXPS.keys()), default="")
+    parser.add_argument("--exp", default="", help="Optional single experiment name (within --family)")
+    parser.add_argument("--prefer-model-step", type=int, default=300000)
+    parser.add_argument("--alpha", type=float, default=0.05)
+    parser.add_argument("--calib-frac", type=float, default=0.5)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--num-eval-examples", type=int, default=1280)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--max-n-points", type=int, default=41)
+    parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
+    parser.add_argument("--phi", default="norm_bins", choices=["intercept", "linear", "norm_bins"])
+    parser.add_argument("--num-bins", type=int, default=5)
+    parser.add_argument("--exact", action="store_true", help="Use exact cutoff computation (finite Phi only).")
+    parser.add_argument(
+        "--kernel",
+        default="",
+        help="Enable RKHS conditional conformal by specifying a sklearn-compatible kernel "
+        "(e.g. rbf, linear, poly, sigmoid). Empty means no RKHS.",
+    )
+    parser.add_argument("--gamma", type=float, default=1.0, help="Kernel gamma (passed to sklearn pairwise_kernels).")
+    parser.add_argument(
+        "--lambda",
+        dest="lam",
+        type=float,
+        default=1.0,
+        help="RKHS regularization lambda (package uses key 'lambda').",
+    )
+    args = parser.parse_args()
+
+    if not (0.0 < args.alpha < 1.0):
+        raise SystemExit("--alpha must be in (0,1)")
+    if not (0.0 < args.calib_frac < 1.0):
+        raise SystemExit("--calib-frac must be in (0,1)")
+
+    infinite_params = {}
+    if args.kernel:
+        infinite_params = {"kernel": str(args.kernel), "gamma": float(args.gamma), "lambda": float(args.lam)}
+        if args.exact:
+            print("[WARN] --exact is not supported with --kernel; disabling exact mode.")
+            args.exact = False
+
+    device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        print("[WARN] --device=cuda requested but CUDA not available; falling back to cpu.")
+        device = "cpu"
+
+    results_dir = Path(args.results_dir).resolve()
+    out_dir = results_dir / "_icl_curves"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    explicit_run_dir = Path(args.run_dir).resolve() if args.run_dir else None
+    if explicit_run_dir is not None:
+        exp_list = ["__explicit_run_dir__"]
+    else:
+        if not args.family:
+            raise SystemExit("Provide either --run-dir or --family.")
+        exp_list = EXPS[args.family]
+        if args.exp:
+            if args.exp not in exp_list:
+                raise SystemExit(f"--exp must be one of: {exp_list}")
+            exp_list = [args.exp]
+
+    rows = []
+
+    for exp in exp_list:
+        if explicit_run_dir is not None:
+            rd = explicit_run_dir
+            exp_name = explicit_run_dir.name
+        else:
+            exp_dir = results_dir / exp
+            rd = latest_run_dir(exp_dir, prefer_step=args.prefer_model_step)
+            exp_name = exp
+        if rd is None:
+            print("[SKIP]", exp, "(no checkpoint)")
+            continue
+
+        cfg = yaml.safe_load((rd / "config.yaml").open("r"))
+        model_cfg = cfg["model"]
+        training_cfg = cfg["training"]
+        tasks = training_cfg.get("tasks", []) or []
+        if not tasks:
+            print("[SKIP]", exp, "(no tasks)")
+            continue
+
+        model = build_model(build_conf(model_cfg))
+        ckpt_path, _ = select_ckpt_path(rd, prefer_step=args.prefer_model_step)
+        if ckpt_path is None:
+            print("[SKIP]", exp, "(no checkpoint file in run dir)")
+            continue
+        st = torch.load(ckpt_path, map_location="cpu")
+        if isinstance(st, dict) and "model_state_dict" in st:
+            st = st["model_state_dict"]
+        model.load_state_dict(st, strict=False)
+        model.eval()
+
+        n_dims = int(model_cfg["n_dims"])
+        data_name = training_cfg.get("data", "gaussian")
+        batch_size = args.batch_size or int(training_cfg.get("batch_size", 64))
+
+        for task in tasks:
+            task_name = task["name"]
+            task_kwargs = task.get("kwargs", {}) or {}
+            task_label = _task_to_label(task_name, task_kwargs)
+
+            xs, ys, yhat = collect_xyhat(
+                model,
+                task_name=task_name,
+                task_kwargs=task_kwargs,
+                data_name=data_name,
+                n_dims=n_dims,
+                n_points=int(args.max_n_points),
+                num_eval_examples=int(args.num_eval_examples),
+                batch_size=int(batch_size),
+                device=device,
+            )
+
+            # Split along examples.
+            split = split_indices(int(xs.shape[0]), calib_frac=float(args.calib_frac), seed=int(args.seed))
+            cal_idx = torch.from_numpy(split.calib_idx).long()
+            test_idx = torch.from_numpy(split.test_idx).long()
+
+            icl_lens = np.arange(1, int(args.max_n_points), dtype=np.int64)
+            for L in icl_lens.tolist():
+                # Condition on query x at position L.
+                x_cal = xs[cal_idx, L, :].numpy()
+                y_cal = ys[cal_idx, L].numpy()
+                yhat_cal = yhat[cal_idx, L].numpy()
+
+                x_te = xs[test_idx, L, :].numpy()
+                y_te = ys[test_idx, L].numpy()
+                yhat_te = yhat[test_idx, L].numpy()
+
+                phi = _build_phi(args.phi, args.num_bins)
+                calib = CondConfSymmetricAbs(phi=phi, seed=int(args.seed), infinite_params=infinite_params)
+                calib.fit(x_cal, yhat_cal, y_cal)
+                q_te = calib.cutoff(x_te, yhat_te, alpha=float(args.alpha), exact=bool(args.exact))
+                lo, hi = calib.intervals(yhat_te, q_te)
+                covered = (y_te >= lo) & (y_te <= hi)
+
+                rows.append(
+                    {
+                        "family": args.family,
+                        "exp": exp_name,
+                        "task": task_label,
+                        "icl_len": int(L),
+                        "alpha": float(args.alpha),
+                        "phi": str(args.phi),
+                        "num_bins": int(args.num_bins),
+                        "coverage": float(np.mean(covered)),
+                        "avg_half_width": float(np.mean(q_te)),
+                        "avg_width": float(2.0 * np.mean(q_te)),
+                        "n_total": int(xs.shape[0]),
+                        "n_cal": int(len(split.calib_idx)),
+                        "n_test": int(len(split.test_idx)),
+                        "run_dir": str(rd),
+                        "ckpt": str(ckpt_path),
+                        "n_points_eval": int(args.max_n_points),
+                        "num_eval_examples": int(args.num_eval_examples),
+                        "batch_size": int(batch_size),
+                        "seed": int(args.seed),
+                        "calib_frac": float(args.calib_frac),
+                        "device": device,
+                        "exact": bool(args.exact),
+                        "kernel": str(args.kernel),
+                        "gamma": float(args.gamma),
+                        "lambda": float(args.lam),
+                    }
+                )
+
+    alpha_tag = str(args.alpha).replace(".", "p")
+    group_tag = args.family if args.family else "run"
+    csv_path = out_dir / f"compare_lr2x_condconf_summary_{group_tag}_alpha{alpha_tag}.csv"
+    if rows:
+        with csv_path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print("Saved:", csv_path)
+    else:
+        print("[WARN] no rows produced")
+
+
+if __name__ == "__main__":
+    main()
