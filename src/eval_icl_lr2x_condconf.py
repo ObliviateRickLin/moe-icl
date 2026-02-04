@@ -128,6 +128,71 @@ def _build_phi(name: str, num_bins: int) -> object:
     raise SystemExit("--phi must be one of: intercept, linear, norm_bins")
 
 
+def _bootstrap_mean_ci_90(values: np.ndarray, *, bootstrap_idx: np.ndarray) -> tuple[float, float]:
+    """
+    Returns a 90% bootstrap CI for the mean, matching src/eval.py convention:
+      - resample indices shape: (B, n)
+      - compute bootstrap means
+      - take the 5th and 95th percentiles via order statistics
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    if bootstrap_idx.size == 0:
+        return (float("nan"), float("nan"))
+
+    means = values[bootstrap_idx].mean(axis=1)
+    means.sort()
+    b = int(means.shape[0])
+    lo_i = int(0.05 * b)
+    hi_i = int(0.95 * b)
+    lo_i = max(0, min(lo_i, b - 1))
+    hi_i = max(0, min(hi_i, b - 1))
+    return (float(means[lo_i]), float(means[hi_i]))
+
+
+def _box_stats(values: np.ndarray) -> dict:
+    """
+    Boxplot stats for interval widths (Tukey style whiskers, 1.5*IQR).
+    Returns a dict compatible with matplotlib.axes.Axes.bxp when keys are mapped.
+    """
+    v = np.asarray(values, dtype=np.float64).reshape(-1)
+    if v.size == 0:
+        return {
+            "p05": float("nan"),
+            "q1": float("nan"),
+            "med": float("nan"),
+            "q3": float("nan"),
+            "p95": float("nan"),
+            "whislo": float("nan"),
+            "whishi": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+        }
+
+    p05, q1, med, q3, p95 = np.quantile(v, [0.05, 0.25, 0.5, 0.75, 0.95]).tolist()
+    iqr = float(q3 - q1)
+    lo_fence = float(q1 - 1.5 * iqr)
+    hi_fence = float(q3 + 1.5 * iqr)
+    v_min = float(np.min(v))
+    v_max = float(np.max(v))
+
+    in_lo = v[v >= lo_fence]
+    in_hi = v[v <= hi_fence]
+    whislo = float(np.min(in_lo)) if in_lo.size else v_min
+    whishi = float(np.max(in_hi)) if in_hi.size else v_max
+
+    return {
+        "p05": float(p05),
+        "q1": float(q1),
+        "med": float(med),
+        "q3": float(q3),
+        "p95": float(p95),
+        "whislo": float(whislo),
+        "whishi": float(whishi),
+        "min": float(v_min),
+        "max": float(v_max),
+    }
+
+
 def main():
     warnings.filterwarnings("ignore", category=FutureWarning, module=r"cvxpy\.atoms\.affine\.vec")
 
@@ -148,6 +213,12 @@ def main():
     parser.add_argument("--num-eval-examples", type=int, default=1280)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-n-points", type=int, default=41)
+    parser.add_argument(
+        "--bootstrap-trials",
+        type=int,
+        default=0,
+        help="If >0, compute 90% bootstrap CIs (5%-95%) for mean coverage and mean width over test examples.",
+    )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--phi", default="norm_bins", choices=["intercept", "linear", "norm_bins"])
     parser.add_argument("--num-bins", type=int, default=5)
@@ -260,6 +331,13 @@ def main():
             cal_idx = torch.from_numpy(split.calib_idx).long()
             test_idx = torch.from_numpy(split.test_idx).long()
 
+            bootstrap_idx = np.empty((0, 0), dtype=np.int64)
+            if int(args.bootstrap_trials) > 0:
+                # Reuse bootstrap indices across ICL lengths (common random numbers for smoother curves).
+                rng = np.random.default_rng(int(args.seed))
+                n_test = int(len(split.test_idx))
+                bootstrap_idx = rng.integers(0, n_test, size=(int(args.bootstrap_trials), n_test), dtype=np.int64)
+
             icl_lens = np.arange(1, int(args.max_n_points), dtype=np.int64)
             for L in icl_lens.tolist():
                 # Condition on query x at position L.
@@ -278,6 +356,17 @@ def main():
                 lo, hi = calib.intervals(yhat_te, q_te)
                 covered = (y_te >= lo) & (y_te <= hi)
 
+                w_te = 2.0 * np.asarray(q_te, dtype=np.float64).reshape(-1)
+                box = _box_stats(w_te)
+
+                cov_ci_low, cov_ci_high = (float("nan"), float("nan"))
+                w_ci_low, w_ci_high = (float("nan"), float("nan"))
+                if bootstrap_idx.size:
+                    cov_ci_low, cov_ci_high = _bootstrap_mean_ci_90(
+                        np.asarray(covered, dtype=np.float64).reshape(-1), bootstrap_idx=bootstrap_idx
+                    )
+                    w_ci_low, w_ci_high = _bootstrap_mean_ci_90(w_te, bootstrap_idx=bootstrap_idx)
+
                 rows.append(
                     {
                         "family": args.family,
@@ -288,8 +377,21 @@ def main():
                         "phi": str(args.phi),
                         "num_bins": int(args.num_bins),
                         "coverage": float(np.mean(covered)),
+                        "coverage_bootstrap_low": float(cov_ci_low),
+                        "coverage_bootstrap_high": float(cov_ci_high),
                         "avg_half_width": float(np.mean(q_te)),
                         "avg_width": float(2.0 * np.mean(q_te)),
+                        "width_bootstrap_low": float(w_ci_low),
+                        "width_bootstrap_high": float(w_ci_high),
+                        "width_p05": float(box["p05"]),
+                        "width_p25": float(box["q1"]),
+                        "width_p50": float(box["med"]),
+                        "width_p75": float(box["q3"]),
+                        "width_p95": float(box["p95"]),
+                        "width_whislo": float(box["whislo"]),
+                        "width_whishi": float(box["whishi"]),
+                        "width_min": float(box["min"]),
+                        "width_max": float(box["max"]),
                         "n_total": int(xs.shape[0]),
                         "n_cal": int(len(split.calib_idx)),
                         "n_test": int(len(split.test_idx)),
@@ -300,6 +402,7 @@ def main():
                         "batch_size": int(batch_size),
                         "seed": int(args.seed),
                         "calib_frac": float(args.calib_frac),
+                        "bootstrap_trials": int(args.bootstrap_trials),
                         "device": device,
                         "exact": bool(args.exact),
                         "kernel": str(args.kernel),
