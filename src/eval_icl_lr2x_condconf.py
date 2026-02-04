@@ -217,7 +217,7 @@ def main():
         "--bootstrap-trials",
         type=int,
         default=0,
-        help="If >0, compute 90% bootstrap CIs (5%-95%) for mean coverage and mean width over test examples.",
+        help="If >0, compute 90%% bootstrap CIs (5%%-95%%) for mean coverage and mean width over test examples.",
     )
     parser.add_argument("--device", choices=["cpu", "cuda"], default="cpu")
     parser.add_argument("--phi", default="norm_bins", choices=["intercept", "linear", "norm_bins"])
