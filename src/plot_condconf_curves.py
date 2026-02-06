@@ -135,6 +135,14 @@ def main():
     parser.add_argument("--out-dir", default="../results/_icl_curves")
     parser.add_argument("--title", default="Conditional conformal")
     parser.add_argument("--alpha", type=float, default=0.05)
+    parser.add_argument(
+        "--width-mode",
+        choices=["avg", "median"],
+        default="avg",
+        help="Which width statistic to plot. "
+        "'avg' uses avg_width (mean width). 'median' uses width_p50 (median width). "
+        "Note: bootstrap CIs in the CSV are for the mean and are only shown for width-mode=avg.",
+    )
     args = parser.parse_args()
 
     csv_path = Path(args.csv).resolve()
@@ -172,12 +180,35 @@ def main():
     plt.figure(figsize=(8.5, 4.8))
     for exp in exp_names:
         c = curves[exp]
-        plt.plot(c.icl_len, c.width, marker="o", linewidth=2, label=exp)
-        if c.width_ci_low is not None and c.width_ci_high is not None:
-            plt.fill_between(c.icl_len, c.width_ci_low, c.width_ci_high, alpha=0.15)
-    plt.title(f"{args.title} | avg interval width")
+        if args.width_mode == "median":
+            # For median, prefer width_p50 if present; otherwise fallback to c.width (avg_width).
+            # We re-load per-row widths to avoid changing the Curve dataclass structure.
+            widths_by_L = {}
+            with csv_path.open("r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for r in reader:
+                    run_dir = r.get("run_dir", "") or ""
+                    exp_name = _infer_exp_name(run_dir) or (r.get("exp", "") or "")
+                    if exp_name != exp:
+                        continue
+                    L = int(float(r.get("icl_len", "nan")))
+                    w = float(r.get("width_p50", "nan"))
+                    if np.isfinite(w):
+                        widths_by_L.setdefault(L, []).append(w)
+            if widths_by_L:
+                lens = c.icl_len
+                med = np.array([float(np.mean(widths_by_L.get(int(L), [np.nan]))) for L in lens], dtype=np.float64)
+                plt.plot(lens, med, marker="o", linewidth=2, label=exp)
+            else:
+                plt.plot(c.icl_len, c.width, marker="o", linewidth=2, label=exp)
+        else:
+            plt.plot(c.icl_len, c.width, marker="o", linewidth=2, label=exp)
+            if c.width_ci_low is not None and c.width_ci_high is not None:
+                plt.fill_between(c.icl_len, c.width_ci_low, c.width_ci_high, alpha=0.15)
+    width_title = "avg interval width" if args.width_mode == "avg" else "median interval width"
+    plt.title(f"{args.title} | {width_title}")
     plt.xlabel("ICL length")
-    plt.ylabel("avg width (2*q(x))")
+    plt.ylabel("width (2*q(x))")
     plt.grid(alpha=0.3)
     plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
