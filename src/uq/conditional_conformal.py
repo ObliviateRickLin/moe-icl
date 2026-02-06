@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Optional, Tuple
 
 import numpy as np
+import weakref
 
 
 try:
@@ -20,6 +21,49 @@ def _require_conditionalconformal():
             "conditionalconformal is required for conditional conformal UQ. "
             "Install with `pip install conditionalconformal cvxpy`."
         ) from _IMPORT_ERROR
+    _patch_conditionalconformal_kernel_cache()
+
+
+def _patch_conditionalconformal_kernel_cache():
+    """
+    conditionalconformal's RKHS path recomputes the calibration kernel Cholesky (O(n^3))
+    inside each dual solve during binary search. Cache it per calibration set to make
+    per-test-point solves practical at moderate n.
+    """
+    try:
+        import conditionalconformal.condconf as cc  # type: ignore
+    except Exception:  # pragma: no cover
+        return
+
+    if getattr(cc, "_moe_kernel_cache_patched", False):
+        return
+    if not hasattr(cc, "_get_kernel_matrix"):
+        return
+
+    orig_get_kernel_matrix = cc._get_kernel_matrix
+    cache: dict[tuple[int, str, float], tuple[weakref.ref, tuple[np.ndarray, np.ndarray]]] = {}
+
+    def _get_kernel_matrix_cached(x_calib, kernel, gamma):
+        key = (id(x_calib), str(kernel), float(gamma))
+        entry = cache.get(key)
+        if entry is not None:
+            ref, out = entry
+            if ref() is x_calib:
+                return out
+            cache.pop(key, None)
+
+        out = orig_get_kernel_matrix(x_calib, kernel, gamma)
+
+        def _cleanup(_ref):
+            cur = cache.get(key)
+            if cur is not None and cur[0] is _ref:
+                cache.pop(key, None)
+
+        cache[key] = (weakref.ref(x_calib, _cleanup), out)
+        return out
+
+    cc._get_kernel_matrix = _get_kernel_matrix_cached  # type: ignore[attr-defined]
+    cc._moe_kernel_cache_patched = True
 
 
 def _as_2d(x: np.ndarray) -> np.ndarray:
