@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import csv
 from pathlib import Path
+import re
 import warnings
 
 import numpy as np
@@ -163,6 +164,15 @@ def _parse_int_csv(s: str) -> set[int]:
             continue
         out.add(int(tok))
     return out
+
+
+def _safe_tag(s: str) -> str:
+    s = (s or "").strip()
+    if not s:
+        return "run"
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
+    s = s.strip("_")
+    return s or "run"
 
 
 def _s_proj(xs_ctx: np.ndarray, x_query: np.ndarray) -> np.ndarray:
@@ -315,6 +325,12 @@ def main():
         "(bin id, split/cond coverage and widths). Example: --diagnostic-detail-icl-lens 1,5,10,20",
     )
     parser.add_argument(
+        "--output-suffix",
+        default="",
+        help="Optional suffix for output CSV filename to avoid collisions across parallel runs "
+        "(e.g. --output-suffix S01).",
+    )
+    parser.add_argument(
         "--disable-tqdm",
         action="store_true",
         help="Disable tqdm progress bars.",
@@ -376,7 +392,7 @@ def main():
     for exp in tqdm(exp_list, desc="Runs", disable=bool(args.disable_tqdm)):
         if explicit_run_dir is not None:
             rd = explicit_run_dir
-            exp_name = explicit_run_dir.name
+            exp_name = explicit_run_dir.parent.name or explicit_run_dir.name
         else:
             exp_dir = results_dir / exp
             rd = latest_run_dir(exp_dir, prefer_step=args.prefer_model_step)
@@ -606,7 +622,15 @@ def main():
                 rows.append(row)
 
     alpha_tag = str(args.alpha).replace(".", "p")
-    group_tag = args.family if args.family else "run"
+    if args.family:
+        group_base = args.family
+    elif explicit_run_dir is not None:
+        group_base = explicit_run_dir.parent.name or explicit_run_dir.name
+    else:
+        group_base = "run"
+    if args.output_suffix:
+        group_base = f"{group_base}_{args.output_suffix}"
+    group_tag = _safe_tag(group_base)
     csv_path = out_dir / f"compare_lr2x_condconf_summary_{group_tag}_alpha{alpha_tag}.csv"
     if rows:
         with csv_path.open("w", newline="", encoding="utf-8") as f:
