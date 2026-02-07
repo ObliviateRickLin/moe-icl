@@ -200,7 +200,7 @@ that targets marginal coverage $1-\alpha = 95\%$ (with $\alpha = 0.05$). Here $Z
 
 \subsubsection{Task and Models}
 We reuse the same noiseless linear regression task and the 12 dense Transformer checkpoints (S01--S12) from Experiment One.
-Unless otherwise noted, all evaluations use the checkpoint at 300{,}000 training steps (\texttt{model\_300000.pt}).
+Unless otherwise noted, all evaluations use the checkpoint at 400{,}000 training steps (\texttt{model\_400000.pt}).
 
 \subsubsection{A Geometric Difficulty Covariate: \texorpdfstring{$s_{\mathrm{proj}}$}{s\_proj}}
 Let $L$ be the ICL length, $X_L \in \mathbb{R}^{L\times d}$ be the matrix of context inputs (rows are examples), and let $x_q \in \mathbb{R}^d$ be the query input.
@@ -260,7 +260,7 @@ Conditioning feature & $s_{\mathrm{proj}}(Z)=\|(I-P_L)x_q\|_2$ \\
 CondConf feature class & $q(Z)=\beta_0+\beta_1 s_{\mathrm{proj}}(Z)$ (\texttt{--phi linear}) \\
 Episodes per ICL length & $n=6400$ (3200 calib / 3200 test) \\
 ICL lengths & $L=1,\dots,20$ \\
-Checkpoint step & 300{,}000 \\
+Checkpoint step & 400{,}000 \\
 Bootstrap CI & 90\% CI with 1000 trials \\
 Diagnostics & 10 quantile bins on $s_{\mathrm{proj}}$ \\
 \bottomrule
@@ -310,18 +310,18 @@ For CondConf we report the median width across test episodes; for Split CP the w
 \cmidrule(lr){2-5}\cmidrule(lr){6-9}
 \textbf{Model} & \textbf{CondCov} & \textbf{SplitCov} & \textbf{CondMedW} & \textbf{SplitW} & \textbf{CondCov} & \textbf{SplitCov} & \textbf{CondMedW} & \textbf{SplitW} \\
 \midrule
-S01 & 95.00 & 95.41 & 3.85 & 4.04 & 95.72 & 95.72 & 2.60 & 2.60 \\
-S02 & 95.12 & 94.66 & 3.66 & 3.76 & 94.19 & 94.03 & 1.76 & 1.75 \\
-S03 & 93.66 & 93.91 & 3.71 & 3.77 & 94.91 & 94.91 & 1.74 & 1.74 \\
-S04 & 94.97 & 94.66 & 3.71 & 3.86 & 95.34 & 95.34 & 1.19 & 1.20 \\
-S05 & 95.69 & 96.12 & 3.81 & 4.00 & 95.22 & 95.16 & 2.64 & 2.64 \\
-S06 & 95.22 & 94.19 & 3.84 & 3.82 & 94.78 & 94.75 & 1.99 & 1.98 \\
-S07 & 95.69 & 95.03 & 3.79 & 3.91 & 95.34 & 95.31 & 1.85 & 1.85 \\
-S08 & 95.41 & 94.84 & 3.85 & 3.84 & 95.53 & 95.47 & 1.73 & 1.73 \\
-S09 & 96.12 & 95.19 & 3.88 & 3.94 & 94.41 & 94.44 & 2.49 & 2.48 \\
-S10 & 95.19 & 94.84 & 3.76 & 3.89 & 94.94 & 94.91 & 1.61 & 1.61 \\
-S11 & 95.09 & 94.41 & 3.84 & 3.88 & 94.97 & 94.97 & 3.15 & 3.15 \\
-S12 & 94.69 & 93.91 & 3.71 & 3.78 & 95.28 & 95.31 & 1.18 & 1.18 \\
+S01 & 94.28 & 95.06 & 3.69 & 3.89 & 94.22 & 94.19 & 2.38 & 2.38 \\
+S02 & 95.78 & 95.84 & 3.80 & 3.97 & 94.91 & 94.91 & 1.69 & 1.69 \\
+S03 & 95.53 & 95.69 & 3.76 & 3.88 & 95.16 & 95.09 & 1.59 & 1.59 \\
+S04 & 95.72 & 95.47 & 3.88 & 4.02 & 95.50 & 95.47 & 1.15 & 1.15 \\
+S05 & 95.19 & 94.72 & 3.71 & 3.84 & 95.94 & 96.06 & 2.72 & 2.74 \\
+S06 & 94.62 & 94.41 & 3.78 & 3.85 & 95.97 & 95.91 & 1.85 & 1.85 \\
+S07 & 95.47 & 95.00 & 3.82 & 3.90 & 95.38 & 95.38 & 1.80 & 1.80 \\
+S08 & 95.25 & 94.84 & 3.82 & 3.93 & 95.06 & 95.06 & 1.71 & 1.71 \\
+S09 & 95.56 & 95.56 & 3.81 & 3.91 & 94.53 & 94.50 & 2.38 & 2.38 \\
+S10 & 95.22 & 94.97 & 3.83 & 3.93 & 95.91 & 95.88 & 1.51 & 1.50 \\
+S11 & 94.59 & 94.59 & 3.69 & 3.81 & 95.81 & 95.84 & 1.67 & 1.67 \\
+S12 & 94.31 & 94.41 & 3.67 & 3.84 & 94.75 & 94.66 & 1.10 & 1.11 \\
 \bottomrule
 \end{tabular}
 }
