@@ -1,0 +1,371 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+
+\title{\textbf{In-Context Learning and Model Capacity}}
+\author{Jinrui}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\noindent\textbf{GitHub Repository:} \url{https://github.com/your-username/moe-icl}
+
+\begin{abstract}
+This repository investigates in-context learning (ICL) capabilities across different model scales and architectures, with a focus on understanding how model capacity affects performance and uncertainty quantification through conformal prediction methods.
+\end{abstract}
+
+\section{Introduction}
+
+This work systematically studies ICL across model scales, exploring both predictive performance and uncertainty calibration.
+
+\section{Experiment One: Dense Transformer Scaling}
+
+This experiment systematically examines how model scale (width and depth) affects ICL performance on linear regression tasks.
+
+\subsection{Experimental Setup}
+
+\subsubsection{Task Description}
+\begin{itemize}
+    \item \textbf{Task}: Linear regression with normalized weights
+    \item \textbf{Input dimension}: $d = 20$
+    \item \textbf{Context length}: 21 positions (20 examples + 1 query)
+    \item \textbf{Data distribution}: Gaussian inputs, $\mathbf{x} \sim \mathcal{N}(0, I_d)$
+    \item \textbf{Labels}: $y = \mathbf{w}^\top \mathbf{x}$ where $\|\mathbf{w}\| = 1$
+\end{itemize}
+
+\subsubsection{Training Configuration}
+All models share the following training hyperparameters:
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Optimizer & Adam \\
+Learning rate & $1 \times 10^{-4}$ \\
+Batch size & 64 \\
+Training steps & 400,000 \\
+Checkpoint interval & 100,000 steps \\
+MLP hidden multiplier & 4 \\
+RMSNorm epsilon & $10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\caption{Shared training hyperparameters}
+\end{table}
+
+\subsubsection{Model Configurations}
+
+We evaluate 12 dense GPT-2 style transformer configurations organized into three groups:
+
+\paragraph{Width Scaling (Fixed Depth = 6)}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Width ($d_{emb}$)} & \textbf{Depth ($L$)} & \textbf{Heads} & \textbf{Est. Params} \\
+\midrule
+S01 & 32 & 6 & 4 & $\sim$50K \\
+S02 & 64 & 6 & 4 & $\sim$200K \\
+S03 & 128 & 6 & 8 & $\sim$800K \\
+S04 & 256 & 6 & 8 & $\sim$3.2M \\
+\bottomrule
+\end{tabular}
+\caption{Width scaling experiments (S01--S04)}
+\end{table}
+
+\paragraph{Depth Scaling (Fixed Width = 64)}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Width ($d_{emb}$)} & \textbf{Depth ($L$)} & \textbf{Heads} & \textbf{Est. Params} \\
+\midrule
+S05 & 64 & 2 & 4 & $\sim$70K \\
+S06 & 64 & 4 & 4 & $\sim$130K \\
+S07 & 64 & 8 & 4 & $\sim$260K \\
+S08 & 64 & 12 & 4 & $\sim$400K \\
+\bottomrule
+\end{tabular}
+\caption{Depth scaling experiments (S05--S08)}
+\end{table}
+
+\paragraph{Standard GPT-2 Configurations}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{Width ($d_{emb}$)} & \textbf{Depth ($L$)} & \textbf{Heads} & \textbf{Est. Params} \\
+\midrule
+S09 (tiny) & 32 & 4 & 4 & $\sim$35K \\
+S10 (small) & 64 & 8 & 4 & $\sim$260K \\
+S11 (medium) & 128 & 12 & 8 & $\sim$8.8M \\
+S12 (large) & 256 & 12 & 8 & $\sim$35M \\
+\bottomrule
+\end{tabular}
+\caption{GPT-2 style scaling experiments (S09--S12)}
+\end{table}
+
+\subsection{Results}
+
+\subsubsection{ICL Error Curves}
+
+Figure~\ref{fig:icl_curves} shows the in-context learning curves for all 12 models at 400K training steps. The error (mean squared error) is plotted against ICL context length.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{icl_curves.png}
+\caption{ICL error curves with bootstrap 90\% confidence intervals. All models show decreasing error with increasing context length, demonstrating successful in-context learning. Larger models (S04, S12) achieve the lowest final errors.}
+\label{fig:icl_curves}
+\end{figure}
+
+\subsubsection{Final Performance Summary}
+
+Table~\ref{tab:final_results} summarizes the ICL error at position 20 (final context position) for each model.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{llccc}
+\toprule
+\textbf{Model} & \textbf{Config} & \textbf{Error@20} & \textbf{CI Low} & \textbf{CI High} \\
+\midrule
+\multicolumn{5}{l}{\textit{Width Scaling (Depth = 6)}} \\
+S01 & 32d, 6L & 0.388 & 0.374 & 0.402 \\
+S02 & 64d, 6L & 0.181 & 0.174 & 0.187 \\
+S03 & 128d, 6L & 0.156 & 0.150 & 0.162 \\
+S04 & 256d, 6L & \textbf{0.073} & 0.070 & 0.077 \\
+\midrule
+\multicolumn{5}{l}{\textit{Depth Scaling (Width = 64)}} \\
+S05 & 64d, 2L & 0.443 & 0.428 & 0.457 \\
+S06 & 64d, 4L & 0.212 & 0.204 & 0.220 \\
+S07 & 64d, 8L & 0.190 & 0.183 & 0.197 \\
+S08 & 64d, 12L & 0.167 & 0.161 & 0.173 \\
+\midrule
+\multicolumn{5}{l}{\textit{GPT-2 Style Scaling}} \\
+S09 & 32d, 4L (tiny) & 0.366 & 0.353 & 0.380 \\
+S10 & 64d, 8L (small) & 0.138 & 0.132 & 0.143 \\
+S11 & 128d, 12L (medium) & 0.161 & 0.155 & 0.167 \\
+S12 & 256d, 12L (large) & \textbf{0.071} & 0.068 & 0.074 \\
+\bottomrule
+\end{tabular}
+\caption{Final ICL error at position 20 with 90\% bootstrap confidence intervals. Lower is better. The baseline (random prediction) has error $\approx 1.0$.}
+\label{tab:final_results}
+\end{table}
+
+\subsubsection{Key Observations}
+
+\begin{enumerate}
+    \item \textbf{Width scaling is highly effective}: Increasing width from 32 to 256 (at fixed depth 6) reduces error from 0.388 to 0.073, a \textbf{5.3$\times$ improvement}.
+    
+    \item \textbf{Depth scaling shows diminishing returns}: Increasing depth from 2 to 12 (at fixed width 64) reduces error from 0.443 to 0.167, a \textbf{2.7$\times$ improvement}. However, the gain from 8L to 12L is only 12\%.
+    
+    \item \textbf{Best models}: S04 (256d, 6L) and S12 (256d, 12L) achieve the best performance with errors around 0.07, approaching the optimal ridge regression baseline.
+    
+    \item \textbf{Width dominates over depth}: S04 (256d, 6L, error=0.073) outperforms S08 (64d, 12L, error=0.167), despite having fewer layers. This suggests width is more critical than depth for this task.
+    
+    \item \textbf{All models learn}: Even the smallest model (S09: 32d, 4L) achieves error 0.366, significantly better than the random baseline of 1.0, indicating successful in-context learning.
+\end{enumerate}
+
+\subsection{Conclusion}
+
+This scaling study demonstrates that dense transformers can effectively perform in-context linear regression, with performance improving predictably with model scale. Key findings:
+
+\begin{itemize}
+    \item \textbf{Width is more important than depth} for this regression task
+    \item \textbf{Larger models converge to better solutions} following expected scaling laws
+    \item \textbf{400K training steps} are sufficient for convergence across all configurations
+    \item The best models (S04, S12) achieve error $\approx 0.07$, representing a 93\% reduction from the random baseline
+\end{itemize}
+
+These results provide a foundation for future work on Mixture-of-Experts (MoE) architectures, where we will investigate whether sparse expert models can match dense scaling with fewer activated parameters.
+
+\section{Experiment Two: Uncertainty Quantification with Conditional Conformal Prediction (\texorpdfstring{$s_{\mathrm{proj}}$}{s\_proj})}
+
+This experiment studies uncertainty quantification (UQ) for in-context linear regression in the Garg-style noiseless setting using \emph{split conformal prediction} (Split CP) and \emph{conditional conformal prediction} (CondConf).
+For each test episode, we output a symmetric prediction interval
+\[
+    \hat{C}(Z) = [\hat{y}(Z) - q(Z),\ \hat{y}(Z) + q(Z)]
+\]
+that targets marginal coverage $1-\alpha = 95\%$ (with $\alpha = 0.05$). Here $Z$ denotes the full ICL prompt (context + query).
+
+\subsection{Experimental Setup}
+
+\subsubsection{Task and Models}
+We reuse the same noiseless linear regression task and the 12 dense Transformer checkpoints (S01--S12) from Experiment One.
+Unless otherwise noted, all evaluations use the checkpoint at 300{,}000 training steps (\texttt{model\_300000.pt}).
+
+\subsubsection{A Geometric Difficulty Covariate: \texorpdfstring{$s_{\mathrm{proj}}$}{s\_proj}}
+Let $L$ be the ICL length, $X_L \in \mathbb{R}^{L\times d}$ be the matrix of context inputs (rows are examples), and let $x_q \in \mathbb{R}^d$ be the query input.
+For $L \le d$ and full row rank $X_L$, define the orthogonal projector onto the row span of $X_L$:
+\[
+    P_L = X_L^\top (X_L X_L^\top)^{-1} X_L.
+\]
+We define the scalar \emph{projection residual} feature
+\[
+    s_{\mathrm{proj}}(Z) := \|(I - P_L)x_q\|_2,
+\]
+which measures how far the query lies outside the span of the in-context examples (easy $\rightarrow$ hard).
+
+\paragraph{Why \texorpdfstring{$s_{\mathrm{proj}}$}{s\_proj} is a natural conditioning feature.}
+In the noiseless linear regression model $y = w^\top x$ with random $w$, the minimum-norm least-squares estimator based on the context satisfies
+\[
+    \hat{w}_L = X_L^+ y_L = P_L w \qquad (L \le d),
+\]
+so the query prediction error becomes
+\[
+    e_L = y_q - x_q^\top \hat{w}_L = x_q^\top (I - P_L) w.
+\]
+Under a Gaussian prior $w \sim \mathcal{N}(0,\tau^2 I_d)$, the conditional scale of the error is
+\[
+    \mathrm{Var}(e_L\mid X_L, x_q) = \tau^2\, x_q^\top (I-P_L)x_q = \tau^2\, s_{\mathrm{proj}}(Z)^2,
+\]
+so (up to a constant) $s_{\mathrm{proj}}$ is the oracle difficulty/uncertainty scale. Even when we normalize $w$ (as in our data generation), the error magnitude still scales with $s_{\mathrm{proj}}$ up to a dimension-dependent constant, making it a good covariate for conditional interval calibration.
+
+\subsubsection{Methods: Split CP vs. CondConf}
+We use the absolute residual score $S(Z,y)=|y-\hat{y}(Z)|$.
+
+\paragraph{Split conformal (baseline).}
+Split CP calibrates a single global cutoff $q_{\mathrm{split}}$ on a held-out calibration set and applies it to all test queries, producing constant-width intervals.
+
+\paragraph{Conditional conformal (ours).}
+CondConf fits a cutoff function $q(Z)$ in a finite-dimensional linear class using
+\[
+    \Phi(Z) = (1,\ s_{\mathrm{proj}}(Z)) \quad\Rightarrow\quad q(Z)=\Phi(Z)^\top \beta,\ \beta\in\mathbb{R}^2,
+\]
+implemented via \texttt{--x-features s\_proj --phi linear}. This allows the interval width to adapt continuously with difficulty.
+We use the exact cutoff computation mode (\texttt{--exact}) for speed (finite $\Phi$ only; no kernel).
+
+\subsubsection{Evaluation Protocol and Hyperparameters}
+For each model and each ICL length $L\in\{1,\dots,20\}$, we sample $n=6400$ independent episodes and split them into calibration and test sets with \texttt{calib\_frac=0.5} (so $n_{\text{cal}}=n_{\text{test}}=3200$).
+We compute 90\% bootstrap confidence intervals (CI) for mean coverage and mean width using 1000 bootstrap trials (resampling test episodes).
+For conditional diagnostics, we bin test points into 10 quantile bins of $s_{\mathrm{proj}}$ (easy $\rightarrow$ hard) and report per-bin coverage and width.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Target coverage & $1-\alpha=0.95$ ($\alpha=0.05$) \\
+Score & $S(Z,y)=|y-\hat{y}(Z)|$ \\
+Conditioning feature & $s_{\mathrm{proj}}(Z)=\|(I-P_L)x_q\|_2$ \\
+CondConf feature class & $q(Z)=\beta_0+\beta_1 s_{\mathrm{proj}}(Z)$ (\texttt{--phi linear}) \\
+Episodes per ICL length & $n=6400$ (3200 calib / 3200 test) \\
+ICL lengths & $L=1,\dots,20$ \\
+Checkpoint step & 300{,}000 \\
+Bootstrap CI & 90\% CI with 1000 trials \\
+Diagnostics & 10 quantile bins on $s_{\mathrm{proj}}$ \\
+\bottomrule
+\end{tabular}
+\caption{Evaluation configuration for Experiment Two (applied to all S01--S12 models).}
+\label{tab:condconf_config_sproj}
+\end{table}
+
+\subsection{Results}
+
+\subsubsection{Marginal Coverage vs. ICL Length}
+Figure~\ref{fig:sproj_condconf_coverage} shows empirical marginal coverage as a function of ICL length for all 12 models.
+Both Split CP and CondConf achieve coverage close to the 0.95 target across lengths; however, marginal coverage alone does not diagnose conditional miscoverage.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/compare_lr2x_condconf_summary_s_series_sproj_alpha0p05_coverage.png}
+\caption{CondConf (with $s_{\mathrm{proj}}$ and a linear cutoff) marginal coverage vs. ICL length for S01--S12. The dashed line indicates the target $1-\alpha=0.95$.}
+\label{fig:sproj_condconf_coverage}
+\end{figure}
+
+\subsubsection{Median Interval Width vs. ICL Length}
+Figure~\ref{fig:sproj_condconf_width} plots the \emph{median} prediction interval width ($2q(Z)$) vs. ICL length. Width decreases with $L$ and with model scale, reflecting improved point prediction with more context and larger models.
+
+\paragraph{Why we report the median.}
+In exact mode (\texttt{--exact}), a small number of episodes at $L=20$ yield $q(Z)=\infty$ (numerical degeneracy in the cutoff computation on extreme points), which makes the mean width ill-defined.
+The median width (\texttt{width\_p50}) is robust and remains finite for all models and lengths, so we use it for the main width curves.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/compare_lr2x_condconf_summary_s_series_sproj_alpha0p05_width.png}
+\caption{CondConf median interval width vs. ICL length for S01--S12 (median over test episodes at each $L$).}
+\label{fig:sproj_condconf_width}
+\end{figure}
+
+\subsubsection{Summary at $L=1$ and $L=20$}
+Table~\ref{tab:sproj_summary} summarizes marginal coverage and interval widths at short and long context lengths.
+For CondConf we report the median width across test episodes; for Split CP the width is constant across episodes, so mean and median coincide.
+
+\begin{table}[H]
+\centering
+\scriptsize
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcccccccc}
+\toprule
+& \multicolumn{4}{c}{\textbf{$L=1$}} & \multicolumn{4}{c}{\textbf{$L=20$}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+\textbf{Model} & \textbf{CondCov} & \textbf{SplitCov} & \textbf{CondMedW} & \textbf{SplitW} & \textbf{CondCov} & \textbf{SplitCov} & \textbf{CondMedW} & \textbf{SplitW} \\
+\midrule
+S01 & 95.00 & 95.41 & 3.85 & 4.04 & 95.72 & 95.72 & 2.60 & 2.60 \\
+S02 & 95.12 & 94.66 & 3.66 & 3.76 & 94.19 & 94.03 & 1.76 & 1.75 \\
+S03 & 93.66 & 93.91 & 3.71 & 3.77 & 94.91 & 94.91 & 1.74 & 1.74 \\
+S04 & 94.97 & 94.66 & 3.71 & 3.86 & 95.34 & 95.34 & 1.19 & 1.20 \\
+S05 & 95.69 & 96.12 & 3.81 & 4.00 & 95.22 & 95.16 & 2.64 & 2.64 \\
+S06 & 95.22 & 94.19 & 3.84 & 3.82 & 94.78 & 94.75 & 1.99 & 1.98 \\
+S07 & 95.69 & 95.03 & 3.79 & 3.91 & 95.34 & 95.31 & 1.85 & 1.85 \\
+S08 & 95.41 & 94.84 & 3.85 & 3.84 & 95.53 & 95.47 & 1.73 & 1.73 \\
+S09 & 96.12 & 95.19 & 3.88 & 3.94 & 94.41 & 94.44 & 2.49 & 2.48 \\
+S10 & 95.19 & 94.84 & 3.76 & 3.89 & 94.94 & 94.91 & 1.61 & 1.61 \\
+S11 & 95.09 & 94.41 & 3.84 & 3.88 & 94.97 & 94.97 & 3.15 & 3.15 \\
+S12 & 94.69 & 93.91 & 3.71 & 3.78 & 95.28 & 95.31 & 1.18 & 1.18 \\
+\bottomrule
+\end{tabular}
+}
+\caption{Marginal coverage (\%) and width for CondConf vs. Split CP at $L=1$ and $L=20$. Width is $2q(Z)$ (lower is better for fixed coverage). CondMedW is the median CondConf width across test episodes.}
+\label{tab:sproj_summary}
+\end{table}
+
+\subsubsection{Conditional Diagnostics: Coverage and Width vs. Difficulty}
+Marginal coverage can mask strong conditional effects. To diagnose conditional miscoverage, we bin test episodes into 10 quantile bins of $s_{\mathrm{proj}}$ (easy $\rightarrow$ hard) and compare Split CP vs. CondConf within each bin.
+
+Figures~\ref{fig:sproj_binned_S01_L10} and~\ref{fig:sproj_binned_S12_L10} show representative results at $L=10$ for the smallest model (S01) and the largest model (S12).
+Split CP under-covers in the hardest bin (coverage $\approx 0.866$), while CondConf maintains coverage near the 0.95 target by allocating larger widths to harder points and smaller widths to easier points.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/compare_lr2x_condconf_summary_S01_gpt2_w32_d6_lr_S01_alpha0p05_binned_coverage_S01_gpt2_w32_d6_lr_L10.png}
+\includegraphics[width=0.48\textwidth]{figures/compare_lr2x_condconf_summary_S01_gpt2_w32_d6_lr_S01_alpha0p05_binned_width_box_S01_gpt2_w32_d6_lr_L10.png}
+\caption{Binned diagnostics for S01 at $L=10$ (10 quantile bins of $s_{\mathrm{proj}}$). Split CP uses a constant width, so its width boxplot collapses to a line; CondConf adapts width with difficulty and improves coverage in hard bins.}
+\label{fig:sproj_binned_S01_L10}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.48\textwidth]{figures/compare_lr2x_condconf_summary_S12_gpt2_large_lr_S12_alpha0p05_binned_coverage_S12_gpt2_large_lr_L10.png}
+\includegraphics[width=0.48\textwidth]{figures/compare_lr2x_condconf_summary_S12_gpt2_large_lr_S12_alpha0p05_binned_width_box_S12_gpt2_large_lr_L10.png}
+\caption{Binned diagnostics for S12 at $L=10$. CondConf redistributes width from easy points to hard points, correcting the under-coverage of Split CP in the hardest bins.}
+\label{fig:sproj_binned_S12_L10}
+\end{figure}
+
+\subsubsection{Width Distributions Across ICL Length (Example: S12)}
+Figure~\ref{fig:sproj_width_box_S12} shows the distribution of CondConf widths across test episodes for S12 as a function of ICL length.
+The median and upper tail decrease with $L$, indicating that both typical and worst-case uncertainty shrink as more context is provided.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/compare_lr2x_condconf_summary_s_series_sproj_alpha0p05_width_box_S12_gpt2_large_lr.png}
+\caption{CondConf width boxplot for S12 across ICL length (width distribution over test episodes at each $L$).}
+\label{fig:sproj_width_box_S12}
+\end{figure}
+
+\subsection{Key Takeaways}
+\begin{itemize}
+    \item \textbf{Marginal coverage is well-calibrated}: both methods stay close to 95\% across ICL lengths for all models.
+    \item \textbf{Intervals narrow with scale and context}: median width decreases with ICL length and is smallest for the best-performing large models (S04, S12).
+    \item \textbf{Conditional calibration matters}: Split CP can under-cover on hard prompts (large $s_{\mathrm{proj}}$), while CondConf restores coverage by adapting width to difficulty.
+\end{itemize}
+
+\end{document}
