@@ -56,6 +56,20 @@ EXPS = {
         "E100_gemma_moe4_mix_noise2",
         "E101_gemma_moe4_last3_mix_noise2",
     ],
+    "s_mixnoise4_80x40_series": [
+        "S25_gpt2_w32_d6_mixnoise4_80x40",
+        "S26_gpt2_w64_d6_mixnoise4_80x40",
+        "S27_gpt2_w128_d6_mixnoise4_80x40",
+        "S28_gpt2_w256_d6_mixnoise4_80x40",
+        "S29_gpt2_w64_d2_mixnoise4_80x40",
+        "S30_gpt2_w64_d4_mixnoise4_80x40",
+        "S31_gpt2_w64_d8_mixnoise4_80x40",
+        "S32_gpt2_w64_d12_mixnoise4_80x40",
+        "S33_gpt2_tiny_mixnoise4_80x40",
+        "S34_gpt2_small_mixnoise4_80x40",
+        "S35_gpt2_medium_mixnoise4_80x40",
+        "S36_gpt2_large_mixnoise4_80x40",
+    ],
 }
 
 

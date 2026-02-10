@@ -73,6 +73,20 @@ EXPS = {
         "E151_gemma_moe4_lr_2x",
         "E152_gemma_moe4_last3_lr_2x",
     ],
+    "s_nlr80_series": [
+        "S13_gpt2_w32_d6_nlr80x40",
+        "S14_gpt2_w64_d6_nlr80x40",
+        "S15_gpt2_w128_d6_nlr80x40",
+        "S16_gpt2_w256_d6_nlr80x40",
+        "S17_gpt2_w64_d2_nlr80x40",
+        "S18_gpt2_w64_d4_nlr80x40",
+        "S19_gpt2_w64_d8_nlr80x40",
+        "S20_gpt2_w64_d12_nlr80x40",
+        "S21_gpt2_tiny_nlr80x40",
+        "S22_gpt2_small_nlr80x40",
+        "S23_gpt2_medium_nlr80x40",
+        "S24_gpt2_large_nlr80x40",
+    ],
 }
 
 
