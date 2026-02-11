@@ -1,6 +1,7 @@
 inherit:
 - ../base_decoder.yaml
 training:
+  train_steps: 500001
   tasks:
   - name: noisy_linear_regression
     kwargs:
@@ -20,19 +21,19 @@ training:
       noise_std: 1.0
   curriculum:
     dims:
-      start: 80
-      end: 80
+      start: 10
+      end: 40
       inc: 1
       interval: 2000
     points:
-      start: 41
-      end: 41
+      start: 21
+      end: 81
       inc: 2
       interval: 2000
 model:
   family: gpt2
-  n_dims: 80
-  n_positions: 41
+  n_dims: 40
+  n_positions: 81
   n_embd: 32
   n_layer: 4
   n_head: 4
