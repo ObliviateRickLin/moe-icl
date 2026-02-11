@@ -118,6 +118,81 @@ class LinearPhi(PhiBase):
         return np.concatenate([np.ones((x.shape[0], 1), dtype=float), x], axis=1)
 
 
+class LinearRFFPhi(PhiBase):
+    """
+    Phi(x) = [1, x, z_rff(x)], where z_rff is a Random Fourier Features approximation
+    of a shift-invariant kernel (RBF or Laplacian).
+
+    This is a practical way to get "kernel-like" nonlinear flexibility while staying
+    in the finite-dimensional CondConf path (so we can use --exact and avoid CVXPY).
+    """
+
+    def __init__(
+        self,
+        *,
+        n_rff: int,
+        kernel: Literal["rbf", "laplacian"] = "rbf",
+        gamma: float = 1.0,
+        seed: int = 0,
+        standardize: bool = True,
+        eps: float = 1e-8,
+    ):
+        self.n_rff = int(n_rff)
+        self.kernel = str(kernel)
+        self.gamma = float(gamma)
+        self.seed = int(seed)
+        self.standardize = bool(standardize)
+        self.eps = float(eps)
+
+        self._mu: Optional[np.ndarray] = None
+        self._sigma: Optional[np.ndarray] = None
+        self._W: Optional[np.ndarray] = None  # (d, n_rff)
+        self._b: Optional[np.ndarray] = None  # (n_rff,)
+
+    def fit(self, x_calib: np.ndarray) -> "LinearRFFPhi":
+        if self.n_rff <= 0:
+            raise ValueError("n_rff must be a positive integer")
+        if not np.isfinite(self.gamma) or self.gamma <= 0:
+            raise ValueError("gamma must be a positive finite float")
+        if self.kernel not in ("rbf", "laplacian"):
+            raise ValueError("kernel must be one of: rbf, laplacian")
+
+        x_calib = _as_2d(x_calib).astype(float)
+        d = int(x_calib.shape[1])
+
+        if self.standardize:
+            self._mu = x_calib.mean(axis=0, keepdims=True)
+            self._sigma = x_calib.std(axis=0, keepdims=True) + self.eps
+
+        rng = np.random.default_rng(int(self.seed))
+        if self.kernel == "rbf":
+            # sklearn's rbf: k(x,y)=exp(-gamma||x-y||^2). RFF uses w ~ N(0, 2*gamma I).
+            scale = float(np.sqrt(2.0 * self.gamma))
+            W = rng.normal(loc=0.0, scale=scale, size=(d, int(self.n_rff)))
+        else:
+            # Laplacian (L1) kernel: k(x,y)=exp(-gamma||x-y||_1) has w_i ~ Cauchy(0, gamma).
+            W = rng.standard_cauchy(size=(d, int(self.n_rff))) * float(self.gamma)
+        b = rng.uniform(low=0.0, high=2.0 * np.pi, size=(int(self.n_rff),))
+
+        self._W = W.astype(float, copy=False)
+        self._b = b.astype(float, copy=False)
+        return self
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        x = _as_2d(x).astype(float)
+        if self.standardize and self._mu is not None and self._sigma is not None:
+            x = (x - self._mu) / self._sigma
+
+        if self._W is None or self._b is None:
+            # If user forgot to call fit(), fall back to a deterministic fit-like init.
+            self.fit(x)
+            assert self._W is not None and self._b is not None
+
+        proj = x @ self._W + self._b.reshape(1, -1)
+        z = np.sqrt(2.0 / float(self.n_rff)) * np.cos(proj)
+        return np.concatenate([np.ones((x.shape[0], 1), dtype=float), x, z], axis=1)
+
+
 class NormBinsPhi(PhiBase):
     """
     One-hot bins on ||x|| with an intercept: Phi(x) = [1, 1{bin=0}, ..., 1{bin=B-1}].

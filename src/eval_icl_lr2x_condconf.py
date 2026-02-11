@@ -43,7 +43,14 @@ from ckpt_utils import latest_run_dir, select_ckpt_path
 from models import build_model
 from samplers import get_data_sampler
 from tasks import get_task_sampler
-from uq.conditional_conformal import CondConfSymmetricAbs, InterceptPhi, LinearPhi, NormBinsPhi, split_indices
+from uq.conditional_conformal import (
+    CondConfSymmetricAbs,
+    InterceptPhi,
+    LinearPhi,
+    LinearRFFPhi,
+    NormBinsPhi,
+    split_indices,
+)
 
 try:
     from tqdm.auto import tqdm
@@ -144,14 +151,26 @@ def collect_xyhat(
     return torch.cat(xs_all, dim=0), torch.cat(ys_all, dim=0), torch.cat(yhat_all, dim=0)
 
 
-def _build_phi(name: str, num_bins: int) -> object:
+def _build_phi(
+    *,
+    name: str,
+    num_bins: int,
+    rff_dim: int,
+    rff_kernel: str,
+    gamma: float,
+    seed: int,
+) -> object:
     if name == "intercept":
         return InterceptPhi()
     if name == "linear":
         return LinearPhi(standardize=True)
+    if name == "linear_rff":
+        if int(rff_dim) <= 0:
+            raise SystemExit("--rff-dim must be >0 when --phi=linear_rff")
+        return LinearRFFPhi(n_rff=int(rff_dim), kernel=str(rff_kernel), gamma=float(gamma), seed=int(seed))
     if name == "norm_bins":
         return NormBinsPhi(num_bins=num_bins)
-    raise SystemExit("--phi must be one of: intercept, linear, norm_bins")
+    raise SystemExit("--phi must be one of: intercept, linear, linear_rff, norm_bins")
 
 
 def _conformal_q_abs(scores: np.ndarray, alpha: float) -> float:
@@ -341,8 +360,15 @@ def main():
         help="Which covariates to feed into conditional conformal. "
         "query_x uses the raw query x at position L; s_proj uses ||(I-P_L)x_query||.",
     )
-    parser.add_argument("--phi", default="norm_bins", choices=["intercept", "linear", "norm_bins"])
+    parser.add_argument("--phi", default="norm_bins", choices=["intercept", "linear", "linear_rff", "norm_bins"])
     parser.add_argument("--num-bins", type=int, default=5)
+    parser.add_argument("--rff-dim", type=int, default=0, help="RFF feature count (only used when --phi=linear_rff).")
+    parser.add_argument(
+        "--rff-kernel",
+        default="rbf",
+        choices=["rbf", "laplacian"],
+        help="Which shift-invariant kernel to approximate with RFF (only used when --phi=linear_rff).",
+    )
     parser.add_argument(
         "--diagnostic-bins",
         type=int,
@@ -540,7 +566,14 @@ def main():
                 hi_split = yhat_te + q_split
                 covered_split = (y_te >= lo_split) & (y_te <= hi_split)
 
-                phi = _build_phi(args.phi, args.num_bins)
+                phi = _build_phi(
+                    name=str(args.phi),
+                    num_bins=int(args.num_bins),
+                    rff_dim=int(args.rff_dim),
+                    rff_kernel=str(args.rff_kernel),
+                    gamma=float(args.gamma),
+                    seed=int(args.seed),
+                )
                 calib = CondConfSymmetricAbs(phi=phi, seed=int(args.seed), infinite_params=infinite_params)
                 calib.fit(x_cal, yhat_cal, y_cal)
                 q_te = calib.cutoff(x_te, yhat_te, alpha=float(args.alpha), exact=bool(args.exact))
