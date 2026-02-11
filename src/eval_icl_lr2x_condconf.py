@@ -310,6 +310,24 @@ def main():
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-n-points", type=int, default=41)
     parser.add_argument(
+        "--icl-start",
+        type=int,
+        default=1,
+        help="First ICL length L to evaluate (inclusive). Only used if --icl-lens is empty.",
+    )
+    parser.add_argument(
+        "--icl-step",
+        type=int,
+        default=1,
+        help="ICL length step size. Only used if --icl-lens is empty.",
+    )
+    parser.add_argument(
+        "--icl-lens",
+        default="",
+        help="Optional comma-separated ICL lengths to evaluate (overrides --icl-start/--icl-step). "
+        "Example: --icl-lens 4,8,12,16,20,40,80",
+    )
+    parser.add_argument(
         "--bootstrap-trials",
         type=int,
         default=0,
@@ -370,6 +388,10 @@ def main():
         raise SystemExit("--alpha must be in (0,1)")
     if not (0.0 < args.calib_frac < 1.0):
         raise SystemExit("--calib-frac must be in (0,1)")
+    if int(args.icl_step) <= 0:
+        raise SystemExit("--icl-step must be a positive integer")
+    if int(args.icl_start) < 0:
+        raise SystemExit("--icl-start must be >= 0")
 
     infinite_params = {}
     if args.kernel:
@@ -472,7 +494,18 @@ def main():
                 n_test = int(len(split.test_idx))
                 bootstrap_idx = rng.integers(0, n_test, size=(int(args.bootstrap_trials), n_test), dtype=np.int64)
 
-            icl_lens = np.arange(1, int(args.max_n_points), dtype=np.int64)
+            if str(args.icl_lens).strip():
+                icl_lens = np.array(sorted(_parse_int_csv(str(args.icl_lens))), dtype=np.int64)
+            else:
+                icl_lens = np.arange(
+                    int(args.icl_start),
+                    int(args.max_n_points),
+                    int(args.icl_step),
+                    dtype=np.int64,
+                )
+            # By design we predict at position L using L context examples (0..L-1).
+            # So L should be in [1, max_n_points-1].
+            icl_lens = icl_lens[(icl_lens >= 1) & (icl_lens < int(args.max_n_points))]
             for L in tqdm(
                 icl_lens.tolist(),
                 desc=f"{exp_name}:{task_name} L",

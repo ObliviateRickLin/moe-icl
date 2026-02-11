@@ -183,9 +183,11 @@ class CondConfSymmetricAbs:
     with score S(x,y) = |y - yhat(x)|.
 
     Implementation note:
-      - We pass x_aug = concat([x_features, yhat]) into conditionalconformal.
-      - score_fn uses the last column as yhat, so it stays vectorized and stateless.
-      - Phi_fn is evaluated on x_features only (excludes yhat).
+      - To keep the conditioning covariates as just x_features (e.g. query_x), we do NOT
+        pass yhat into conditionalconformal's covariates.
+      - Instead we set up conditionalconformal on residual magnitudes r = |y - yhat| with
+        score_fn(x, r) = r and score_inv_fn(thr, x) = [0, thr]. The predicted cutoff is
+        then q(x) = thr, which we use to form [yhat - q(x), yhat + q(x)].
     """
 
     def __init__(
@@ -200,15 +202,14 @@ class CondConfSymmetricAbs:
         self.infinite_params = infinite_params or {}
         self.seed = int(seed)
 
-        def score_fn(x_aug: np.ndarray, y: np.ndarray) -> np.ndarray:
-            x_aug = _as_2d(x_aug).astype(float)
-            y = np.asarray(y).reshape(-1)
-            yhat = x_aug[:, -1]
-            return np.abs(y - yhat)
+        def score_fn(x: np.ndarray, r: np.ndarray) -> np.ndarray:
+            # Here y is the residual magnitude r = |y - yhat|, so the score is identity.
+            r = np.asarray(r).reshape(-1).astype(float)
+            return r
 
-        def Phi_fn(x_aug: np.ndarray) -> np.ndarray:
-            x_aug = _as_2d(x_aug).astype(float)
-            return self.phi(x_aug[:, :-1])
+        def Phi_fn(x: np.ndarray) -> np.ndarray:
+            x = _as_2d(x).astype(float)
+            return self.phi(x)
 
         self._gcc = _CondConf(
             score_fn=score_fn,
@@ -219,11 +220,11 @@ class CondConfSymmetricAbs:
 
     def fit(self, x_features_calib: np.ndarray, yhat_calib: np.ndarray, y_calib: np.ndarray) -> "CondConfSymmetricAbs":
         x_features_calib = _as_2d(x_features_calib).astype(float)
-        yhat_calib = np.asarray(yhat_calib).reshape(-1, 1).astype(float)
+        yhat_calib = np.asarray(yhat_calib).reshape(-1).astype(float)
         y_calib = np.asarray(y_calib).reshape(-1).astype(float)
+        r_calib = np.abs(y_calib - yhat_calib)
         self.phi.fit(x_features_calib)
-        x_aug = np.concatenate([x_features_calib, yhat_calib], axis=1)
-        self._gcc.setup_problem(x_aug, y_calib)
+        self._gcc.setup_problem(x_features_calib, r_calib)
         return self
 
     def cutoff(
@@ -244,23 +245,24 @@ class CondConfSymmetricAbs:
         if not (0.0 < alpha < 1.0):
             raise ValueError("alpha must be in (0,1)")
         x_features_test = _as_2d(x_features_test).astype(float)
-        yhat_test = np.asarray(yhat_test).reshape(-1, 1).astype(float)
+        _yhat_test = np.asarray(yhat_test).reshape(-1).astype(float)
 
         quantile = 1.0 - float(alpha)
 
         def score_inv_fn(thr: float, x_test_col: np.ndarray) -> Tuple[float, float]:
-            # x_test_col comes in as (d, 1); last entry is yhat.
-            yhat = float(x_test_col[-1, 0])
             t = float(thr)
-            return (yhat - t, yhat + t)
+            if not np.isfinite(t):
+                return (float("nan"), float("nan"))
+            # Residual magnitude r is nonnegative, so the prediction set is [0, t].
+            return (0.0, max(0.0, t))
 
         out = np.zeros((x_features_test.shape[0],), dtype=float)
         for i in range(x_features_test.shape[0]):
-            x_aug = np.concatenate([x_features_test[i : i + 1], yhat_test[i : i + 1]], axis=1)
+            x = x_features_test[i : i + 1]
             try:
                 interval = self._gcc.predict(
                     quantile=quantile,
-                    x_test=x_aug,
+                    x_test=x,
                     score_inv_fn=score_inv_fn,
                     randomize=bool(randomize),
                     exact=bool(exact),
@@ -269,13 +271,13 @@ class CondConfSymmetricAbs:
                 # The upstream exact path can fail when Phi induces singular bases.
                 interval = self._gcc.predict(
                     quantile=quantile,
-                    x_test=x_aug,
+                    x_test=x,
                     score_inv_fn=score_inv_fn,
                     randomize=bool(randomize),
                     exact=False,
                 )
-            # interval is (lo, hi) for our score_inv_fn
-            out[i] = 0.5 * (float(interval[1]) - float(interval[0]))
+            # interval is (0, q) for our score_inv_fn
+            out[i] = float(interval[1])
         return out
 
     @staticmethod
