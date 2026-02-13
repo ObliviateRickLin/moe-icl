@@ -368,8 +368,11 @@ class SpeedCPSymmetricAbs:
         lambda_path, _S_path = _import_speedcp()
 
         t0 = time.time()
-        # Ensure the lambda path runs far enough to cover lam (common values are <= 10).
-        thres = max(10.0, float(self.lam) * 1.5)
+        # NOTE: speedcp's lambda_path has an "early stop if descent too small AND lambda<thres".
+        # If thres is large (e.g. 10), the path may stop before reaching small target lambdas
+        # like 0.05/0.1/0.2. We instead set thres below the requested lambda so the path
+        # continues until it safely covers `self.lam`.
+        thres = max(1e-6, float(self.lam) * 0.5)
         res = lambda_path(
             self._r_cal.ravel(),
             self._Phi_cal,
