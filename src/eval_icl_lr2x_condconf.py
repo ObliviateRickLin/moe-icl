@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 from pathlib import Path
+import random
 import re
 import warnings
 
@@ -149,6 +151,12 @@ def collect_xyhat(
         ys_all.append(ys.detach().cpu())
         yhat_all.append(yhat.detach().cpu())
     return torch.cat(xs_all, dim=0), torch.cat(ys_all, dim=0), torch.cat(yhat_all, dim=0)
+
+
+def _seed_everything(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
 
 
 def _build_phi(
@@ -325,6 +333,13 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--calib-frac", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--data-seed",
+        type=int,
+        default=-1,
+        help="Seed for sampling evaluation episodes (xs/tasks/noise). "
+        "If negative, defaults to --seed.",
+    )
     parser.add_argument("--num-eval-examples", type=int, default=6400)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--max-n-points", type=int, default=41)
@@ -423,6 +438,8 @@ def main():
     )
     parser.add_argument(
         "--rkhs-binary-search-tol",
+        "--kernel-bisect-tol",
+        dest="rkhs_binary_search_tol",
         type=float,
         default=1e-3,
         help="Binary search tolerance for RKHS cutoff solve (larger is faster, less precise).",
@@ -432,6 +449,30 @@ def main():
         type=int,
         default=1,
         help="Thread workers for per-test-point RKHS solves (only affects --kernel path).",
+    )
+    parser.add_argument(
+        "--kernel-osqp-eps",
+        type=float,
+        default=1e-4,
+        help="OSQP abs/rel tolerance for custom kernel cutoff (--kernel-solver=osqp).",
+    )
+    parser.add_argument(
+        "--kernel-osqp-max-iter",
+        type=int,
+        default=10_000,
+        help="OSQP max iterations for custom kernel cutoff (--kernel-solver=osqp).",
+    )
+    parser.add_argument(
+        "--kernel-solver",
+        choices=["osqp", "cvxpy"],
+        default="cvxpy",
+        help="Kernel CondConf implementation. 'cvxpy' uses conditionalconformal (with --rkhs-solver). "
+        "'osqp' uses a custom OSQP QP.",
+    )
+    parser.add_argument(
+        "--mosek-license",
+        default="",
+        help="Optional path to mosek.lic. If provided, sets MOSEKLM_LICENSE_FILE.",
     )
     args = parser.parse_args()
 
@@ -450,10 +491,36 @@ def main():
 
     infinite_params = {}
     if args.kernel:
-        infinite_params = {"kernel": str(args.kernel), "gamma": float(args.gamma), "lambda": float(args.lam)}
+        infinite_params = {
+            "kernel": str(args.kernel),
+            "gamma": float(args.gamma),
+            "lambda": float(args.lam),
+            "bisect_tol": float(args.rkhs_binary_search_tol),
+            "osqp_eps": float(args.kernel_osqp_eps),
+            "osqp_max_iter": int(args.kernel_osqp_max_iter),
+        }
         if args.exact:
             print("[WARN] --exact is not supported with --kernel; disabling exact mode.")
             args.exact = False
+
+    if str(args.kernel_solver).lower() == "cvxpy":
+        lic_arg = str(args.mosek_license).strip()
+        if lic_arg:
+            lic_path = Path(lic_arg).expanduser().resolve()
+            if not lic_path.exists():
+                raise SystemExit(f"--mosek-license not found: {lic_path}")
+            os.environ["MOSEKLM_LICENSE_FILE"] = str(lic_path)
+        elif not os.environ.get("MOSEKLM_LICENSE_FILE"):
+            # Try common local defaults to reduce MOSEK license friction.
+            candidates = [
+                Path("mosek.lic").resolve(),
+                (Path(__file__).resolve().parent.parent / "mosek.lic").resolve(),
+                (Path.home() / "mosek" / "mosek.lic").resolve(),
+            ]
+            for c in candidates:
+                if c.exists():
+                    os.environ["MOSEKLM_LICENSE_FILE"] = str(c)
+                    break
 
     device = args.device
     if device == "cuda" and not torch.cuda.is_available():
@@ -530,6 +597,8 @@ def main():
             task_kwargs = task.get("kwargs", {}) or {}
             task_label = _task_to_label(task_name, task_kwargs)
 
+            data_seed = int(args.data_seed) if int(args.data_seed) >= 0 else int(args.seed)
+            _seed_everything(data_seed)
             xs, ys, yhat = collect_xyhat(
                 model,
                 task_name=task_name,
@@ -619,6 +688,7 @@ def main():
                     infinite_params=infinite_params,
                     rkhs_solver=str(args.rkhs_solver),
                     binary_search_tol=float(args.rkhs_binary_search_tol),
+                    kernel_solver=str(args.kernel_solver),
                 )
                 calib.fit(x_cal, yhat_cal, y_cal)
                 q_te = calib.cutoff(

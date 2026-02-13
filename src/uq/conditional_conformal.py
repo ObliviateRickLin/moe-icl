@@ -6,6 +6,10 @@ from typing import Callable, Literal, Optional, Tuple
 
 import numpy as np
 import weakref
+import random as _py_random
+
+from scipy.spatial.distance import cdist
+import scipy.sparse as sp
 
 
 try:
@@ -340,6 +344,56 @@ def _as_2d(x: np.ndarray) -> np.ndarray:
     return x
 
 
+def _kernel_gram(x: np.ndarray, *, kernel: str, gamma: float) -> np.ndarray:
+    x = _as_2d(x).astype(float)
+    k = str(kernel).strip().lower()
+    g = float(gamma)
+    if k == "rbf":
+        d2 = cdist(x, x, metric="sqeuclidean")
+        return np.exp(-g * d2)
+    if k == "laplacian":
+        d1 = cdist(x, x, metric="cityblock")
+        return np.exp(-g * d1)
+    if k in {"poly", "polynomial"}:
+        return (g * (x @ x.T) + 1.0) ** 3
+    if k == "sigmoid":
+        return np.tanh(g * (x @ x.T) + 1.0)
+    raise ValueError(f"Unsupported kernel for fast path: {kernel!r}")
+
+
+def _kernel_vec(x_calib: np.ndarray, x_test: np.ndarray, *, kernel: str, gamma: float) -> np.ndarray:
+    x_calib = _as_2d(x_calib).astype(float)
+    x_test = np.asarray(x_test, dtype=float).reshape(1, -1)
+    k = str(kernel).strip().lower()
+    g = float(gamma)
+    if k == "rbf":
+        d2 = cdist(x_calib, x_test, metric="sqeuclidean").reshape(-1)
+        return np.exp(-g * d2)
+    if k == "laplacian":
+        d1 = cdist(x_calib, x_test, metric="cityblock").reshape(-1)
+        return np.exp(-g * d1)
+    if k in {"poly", "polynomial"}:
+        dots = (x_calib @ x_test.T).reshape(-1)
+        return (g * dots + 1.0) ** 3
+    if k == "sigmoid":
+        dots = (x_calib @ x_test.T).reshape(-1)
+        return np.tanh(g * dots + 1.0)
+    raise ValueError(f"Unsupported kernel for fast path: {kernel!r}")
+
+
+def _kernel_self(x_test: np.ndarray, *, kernel: str, gamma: float) -> float:
+    x_test = np.asarray(x_test, dtype=float).reshape(-1)
+    k = str(kernel).strip().lower()
+    g = float(gamma)
+    if k in {"rbf", "laplacian"}:
+        return 1.0
+    if k in {"poly", "polynomial"}:
+        return float((g * float(np.dot(x_test, x_test)) + 1.0) ** 3)
+    if k == "sigmoid":
+        return float(np.tanh(g * float(np.dot(x_test, x_test)) + 1.0))
+    raise ValueError(f"Unsupported kernel for fast path: {kernel!r}")
+
+
 class PhiBase:
     """
     Basis function Phi(x) used to define the conditional guarantees.
@@ -540,6 +594,7 @@ class CondConfSymmetricAbs:
         seed: int = 0,
         rkhs_solver: str = "auto",
         binary_search_tol: float = 1e-3,
+        kernel_solver: Literal["osqp", "cvxpy"] = "cvxpy",
     ):
         _require_conditionalconformal()
         _patch_conditionalconformal_solver(
@@ -549,8 +604,15 @@ class CondConfSymmetricAbs:
         self.phi = phi
         self.infinite_params = infinite_params or {}
         self.seed = int(seed)
+        self.kernel_solver = str(kernel_solver)
+
         self._x_features_calib: Optional[np.ndarray] = None
         self._r_calib: Optional[np.ndarray] = None
+
+        # Cached calibration data for our custom OSQP kernel cutoff.
+        self._x_calib: Optional[np.ndarray] = None
+        self._phi_calib: Optional[np.ndarray] = None
+        self._K11_jitter: Optional[np.ndarray] = None
 
         def score_fn(x: np.ndarray, r: np.ndarray) -> np.ndarray:
             # Here y is the residual magnitude r = |y - yhat|, so the score is identity.
@@ -576,8 +638,141 @@ class CondConfSymmetricAbs:
         self.phi.fit(x_features_calib)
         self._x_features_calib = x_features_calib
         self._r_calib = r_calib
+        # Cache for fast kernel path.
+        self._x_calib = x_features_calib
+        self._phi_calib = np.asarray(self.phi(x_features_calib), dtype=float)
+        self._K11_jitter = None
+        if self.infinite_params.get("kernel"):
+            kernel = str(self.infinite_params.get("kernel"))
+            gamma = float(self.infinite_params.get("gamma", 1.0))
+            K11 = _kernel_gram(x_features_calib, kernel=kernel, gamma=gamma)
+            K11 = K11 + 1e-5 * np.eye(K11.shape[0], dtype=float)
+            self._K11_jitter = K11
         self._gcc.setup_problem(x_features_calib, r_calib)
         return self
+
+    def _cutoff_kernel_osqp(
+        self,
+        x_features_test: np.ndarray,
+        *,
+        alpha: float,
+        randomize: bool,
+    ) -> np.ndarray:
+        import osqp
+
+        if self._x_calib is None or self._r_calib is None or self._phi_calib is None or self._K11_jitter is None:
+            raise RuntimeError("Kernel cutoff requested before fit().")
+
+        kernel = str(self.infinite_params.get("kernel"))
+        gamma = float(self.infinite_params.get("gamma", 1.0))
+        lam = float(self.infinite_params.get("lambda", 1.0))
+        if not np.isfinite(lam) or lam <= 0.0:
+            raise ValueError("--lambda must be > 0 for kernel CondConf")
+        bisect_tol = float(self.infinite_params.get("bisect_tol", 1e-3))
+        if not np.isfinite(bisect_tol) or bisect_tol <= 0.0:
+            raise ValueError("kernel bisect_tol must be > 0")
+        osqp_eps = float(self.infinite_params.get("osqp_eps", 1e-4))
+        if not np.isfinite(osqp_eps) or osqp_eps <= 0.0:
+            raise ValueError("kernel osqp_eps must be > 0")
+        osqp_max_iter = int(self.infinite_params.get("osqp_max_iter", 10_000))
+        if osqp_max_iter <= 0:
+            raise ValueError("kernel osqp_max_iter must be > 0")
+
+        x_cal = self._x_calib
+        r_cal = self._r_calib
+        phi_cal = self._phi_calib
+        K11_j = self._K11_jitter
+
+        quantile = 1.0 - float(alpha)
+        a = float(quantile - 1.0)
+        b = float(quantile)
+        if randomize:
+            thr0 = float(_py_random.Random(self.seed).uniform(a, b))
+        else:
+            thr0 = float(a if quantile < 0.5 else b)
+
+        n_cal = int(r_cal.shape[0])
+        n = n_cal + 1
+        p = int(phi_cal.shape[1])
+
+        radius = 1.0 / float(lam)
+        C = float(radius) / float(n_cal + 1)
+
+        I = sp.eye(n, format="csc")
+        base_q = -np.concatenate([r_cal, [0.0]]).astype(float)
+        bounds_l = np.concatenate([np.full(n, a, dtype=float), np.zeros(p, dtype=float)])
+        bounds_u = np.concatenate([np.full(n, b, dtype=float), np.zeros(p, dtype=float)])
+
+        out = np.zeros((x_features_test.shape[0],), dtype=float)
+        for i in range(x_features_test.shape[0]):
+            x_t = np.asarray(x_features_test[i], dtype=float).reshape(-1)
+            phi_t = np.asarray(self.phi(x_t.reshape(1, -1)), dtype=float)  # (1, p)
+
+            k12 = _kernel_vec(x_cal, x_t, kernel=kernel, gamma=gamma)  # (n_cal,)
+            k22 = _kernel_self(x_t, kernel=kernel, gamma=gamma)
+
+            # Build dense K for augmented set with jitter on calibration block only.
+            K = np.empty((n, n), dtype=float)
+            K[:-1, :-1] = K11_j
+            K[:-1, -1] = k12
+            K[-1, :-1] = k12
+            K[-1, -1] = k22
+
+            P = sp.csc_matrix(np.triu(C * K))
+
+            Phi_aug_T = np.vstack([phi_cal, phi_t]).T  # (p, n)
+            A = sp.vstack([I, sp.csc_matrix(Phi_aug_T)], format="csc")
+
+            prob = osqp.OSQP()
+            # Match upstream binary_search tol=1e-3; no need to oversolve.
+            prob.setup(
+                P=P,
+                q=base_q,
+                A=A,
+                l=bounds_l,
+                u=bounds_u,
+                verbose=False,
+                eps_abs=float(osqp_eps),
+                eps_rel=float(osqp_eps),
+                polish=False,
+                max_iter=int(osqp_max_iter),
+                warm_start=True,
+            )
+
+            def solve_for(S: float) -> tuple[np.ndarray, np.ndarray]:
+                q = base_q.copy()
+                q[-1] = -float(S)
+                prob.update(q=q)
+                res = prob.solve()
+                # status_val: 1=solved, 2=solved inaccurate
+                if res.info.status_val not in (1, 2):
+                    raise RuntimeError(f"OSQP failed: {res.info.status}")
+                return np.asarray(res.x, dtype=float), np.asarray(res.y, dtype=float)
+
+            # Binary search over S, mirroring conditionalconformal.condconf.predict
+            S_min = float(np.min(r_cal))
+            S_max = float(np.max(r_cal) * 2.0)
+            lo, hi = S_min, S_max
+            tol = float(bisect_tol)
+            while (hi - lo) > tol:
+                mid = 0.5 * (lo + hi)
+                eta, _y = solve_for(mid)
+                if float(eta[-1] - thr0) > 0.0:
+                    hi = mid
+                else:
+                    lo = mid
+
+            S_star = float(lo if quantile < 0.5 else hi)
+            eta, y = solve_for(S_star)
+
+            # Duals: first n correspond to box constraints; last p to equality constraints.
+            beta = y[n:]
+
+            # threshold = Phi(x)^T beta + (K_no_jitter @ eta)[-1]
+            kernel_term = float(np.dot(k12, eta[:-1]) + k22 * eta[-1])
+            thr = float(phi_t.reshape(-1) @ beta) + kernel_term
+            out[i] = max(0.0, thr)
+        return out
 
     def cutoff(
         self,
@@ -637,6 +832,13 @@ class CondConfSymmetricAbs:
                 return (float("nan"), float("nan"))
             # Residual magnitude r is nonnegative, so the prediction set is [0, t].
             return (0.0, max(0.0, t))
+
+        if self.infinite_params.get("kernel") and str(self.kernel_solver).lower() == "osqp":
+            return self._cutoff_kernel_osqp(
+                x_features_test,
+                alpha=float(alpha),
+                randomize=bool(randomize),
+            )
 
         out = np.zeros((x_features_test.shape[0],), dtype=float)
 
