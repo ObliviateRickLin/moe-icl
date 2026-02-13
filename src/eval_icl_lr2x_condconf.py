@@ -389,6 +389,13 @@ def main():
         "(e.g. --output-suffix S01).",
     )
     parser.add_argument(
+        "--task-index",
+        type=int,
+        default=None,
+        metavar="I",
+        help="If set, only run the I-th task (0-based) from the run config. Use for parallel per-task eval.",
+    )
+    parser.add_argument(
         "--disable-tqdm",
         action="store_true",
         help="Disable tqdm progress bars.",
@@ -408,6 +415,24 @@ def main():
         default=1.0,
         help="RKHS regularization lambda (package uses key 'lambda').",
     )
+    parser.add_argument(
+        "--rkhs-solver",
+        default="auto",
+        choices=["auto", "osqp", "scs", "clarabel"],
+        help="RKHS backend solver for CVXPY path (MOSEK, if installed, still takes precedence).",
+    )
+    parser.add_argument(
+        "--rkhs-binary-search-tol",
+        type=float,
+        default=1e-3,
+        help="Binary search tolerance for RKHS cutoff solve (larger is faster, less precise).",
+    )
+    parser.add_argument(
+        "--rkhs-test-workers",
+        type=int,
+        default=1,
+        help="Thread workers for per-test-point RKHS solves (only affects --kernel path).",
+    )
     args = parser.parse_args()
 
     if not (0.0 < args.alpha < 1.0):
@@ -418,6 +443,10 @@ def main():
         raise SystemExit("--icl-step must be a positive integer")
     if int(args.icl_start) < 0:
         raise SystemExit("--icl-start must be >= 0")
+    if float(args.rkhs_binary_search_tol) <= 0:
+        raise SystemExit("--rkhs-binary-search-tol must be > 0")
+    if int(args.rkhs_test_workers) <= 0:
+        raise SystemExit("--rkhs-test-workers must be >= 1")
 
     infinite_params = {}
     if args.kernel:
@@ -470,6 +499,11 @@ def main():
         if not tasks:
             print("[SKIP]", exp, "(no tasks)")
             continue
+        if args.task_index is not None:
+            if args.task_index < 0 or args.task_index >= len(tasks):
+                print("[SKIP]", exp, f"(--task-index {args.task_index} out of range [0, {len(tasks)-1}])")
+                continue
+            tasks = [tasks[args.task_index]]
 
         model = build_model(build_conf(model_cfg))
         ckpt_path, _ = select_ckpt_path(rd, prefer_step=args.prefer_model_step)
@@ -523,12 +557,17 @@ def main():
             if str(args.icl_lens).strip():
                 icl_lens = np.array(sorted(_parse_int_csv(str(args.icl_lens))), dtype=np.int64)
             else:
+                max_pt = int(args.max_n_points)
                 icl_lens = np.arange(
                     int(args.icl_start),
-                    int(args.max_n_points),
+                    max_pt,
                     int(args.icl_step),
                     dtype=np.int64,
                 )
+                # Include last valid L (max_n_points-1) if not already in step sequence.
+                last_l = max_pt - 1
+                if last_l >= 1 and last_l not in icl_lens:
+                    icl_lens = np.unique(np.concatenate([icl_lens, [last_l]]))
             # By design we predict at position L using L context examples (0..L-1).
             # So L should be in [1, max_n_points-1].
             icl_lens = icl_lens[(icl_lens >= 1) & (icl_lens < int(args.max_n_points))]
@@ -574,9 +613,21 @@ def main():
                     gamma=float(args.gamma),
                     seed=int(args.seed),
                 )
-                calib = CondConfSymmetricAbs(phi=phi, seed=int(args.seed), infinite_params=infinite_params)
+                calib = CondConfSymmetricAbs(
+                    phi=phi,
+                    seed=int(args.seed),
+                    infinite_params=infinite_params,
+                    rkhs_solver=str(args.rkhs_solver),
+                    binary_search_tol=float(args.rkhs_binary_search_tol),
+                )
                 calib.fit(x_cal, yhat_cal, y_cal)
-                q_te = calib.cutoff(x_te, yhat_te, alpha=float(args.alpha), exact=bool(args.exact))
+                q_te = calib.cutoff(
+                    x_te,
+                    yhat_te,
+                    alpha=float(args.alpha),
+                    exact=bool(args.exact),
+                    workers=int(args.rkhs_test_workers),
+                )
                 lo, hi = calib.intervals(yhat_te, q_te)
                 covered = (y_te >= lo) & (y_te <= hi)
 
@@ -634,6 +685,9 @@ def main():
                         "kernel": str(args.kernel),
                         "gamma": float(args.gamma),
                         "lambda": float(args.lam),
+                        "rkhs_solver": str(args.rkhs_solver),
+                        "rkhs_binary_search_tol": float(args.rkhs_binary_search_tol),
+                        "rkhs_test_workers": int(args.rkhs_test_workers),
                 }
 
                 if int(args.diagnostic_bins) > 0:
@@ -696,10 +750,28 @@ def main():
                                     "kernel": str(args.kernel),
                                     "gamma": float(args.gamma),
                                     "lambda": float(args.lam),
+                                    "rkhs_solver": str(args.rkhs_solver),
+                                    "rkhs_binary_search_tol": float(args.rkhs_binary_search_tol),
+                                    "rkhs_test_workers": int(args.rkhs_test_workers),
                                 }
                             )
 
                 rows.append(row)
+                # Emit a compact per-ICL-length metrics line for live monitoring.
+                # This is intentionally one line to remain grep-friendly in nohup logs.
+                print(
+                    (
+                        "[METRIC]"
+                        f" exp={exp_name}"
+                        f" task={task_label}"
+                        f" L={int(L)}"
+                        f" cov={float(np.mean(covered)):.6f}"
+                        f" width={float(2.0 * np.mean(q_te)):.6f}"
+                        f" split_cov={float(np.mean(covered_split)):.6f}"
+                        f" split_width={float(2.0 * q_split):.6f}"
+                    ),
+                    flush=True,
+                )
 
     alpha_tag = str(args.alpha).replace(".", "p")
     if args.family:
