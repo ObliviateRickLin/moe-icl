@@ -59,8 +59,15 @@ def get_task_sampler(
         "linear_classification": LinearClassification,
         "noisy_linear_regression": NoisyLinearRegression,
         "quadratic_regression": QuadraticRegression,
+        "noisy_quadratic_regression": NoisyQuadraticRegression,
+        "noisy_quadratic_regression_mix4": NoisyQuadraticRegressionMix4,
+        # Backward-compatible typo aliases.
+        "noise_quatradic_regression": NoisyQuadraticRegression,
+        "noisy_quatradic_regression": NoisyQuadraticRegression,
         "relu_2nn_regression": Relu2nnRegression,
+        "noisy_relu_2nn_regression": NoisyRelu2nnRegression,
         "decision_tree": DecisionTree,
+        "noisy_decision_tree": NoisyDecisionTree,
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -251,6 +258,85 @@ class QuadraticRegression(LinearRegression):
         return ys_b_quad
 
 
+class NoisyQuadraticRegression(QuadraticRegression):
+    def __init__(
+        self,
+        n_dims,
+        batch_size,
+        pool_dict=None,
+        seeds=None,
+        scale=1,
+        noise_std=0,
+        renormalize_ys=False,
+        normalize_w=False,
+        device='cpu',
+    ):
+        """
+        noise_std: standard deviation of additive Gaussian noise.
+        """
+        super(NoisyQuadraticRegression, self).__init__(
+            n_dims, batch_size, pool_dict, seeds, scale, normalize_w=normalize_w, device=device
+        )
+        self.noise_std = noise_std
+        self.renormalize_ys = renormalize_ys
+
+    def evaluate(self, xs_b):
+        ys_b = super().evaluate(xs_b)
+        ys_b_noisy = ys_b + torch.randn_like(ys_b) * self.noise_std
+        if self.renormalize_ys:
+            ys_b_noisy = ys_b_noisy * math.sqrt(self.n_dims) / ys_b_noisy.std()
+        return ys_b_noisy
+
+
+class NoisyQuadraticRegressionMix4(NoisyQuadraticRegression):
+    def __init__(
+        self,
+        n_dims,
+        batch_size,
+        pool_dict=None,
+        seeds=None,
+        scale=1,
+        noise_stds=(0.1, 0.25, 0.5, 1.0),
+        renormalize_ys=False,
+        normalize_w=False,
+        device='cpu',
+    ):
+        """
+        4-level mixed-noise quadratic regression.
+        Each batch element draws one sigma from `noise_stds` and applies it to all
+        points in that element.
+        """
+        super(NoisyQuadraticRegressionMix4, self).__init__(
+            n_dims=n_dims,
+            batch_size=batch_size,
+            pool_dict=pool_dict,
+            seeds=seeds,
+            scale=scale,
+            noise_std=0.0,
+            renormalize_ys=renormalize_ys,
+            normalize_w=normalize_w,
+            device=device,
+        )
+        if len(noise_stds) != 4:
+            raise ValueError("noise_stds must contain exactly 4 noise levels.")
+        self.noise_stds = torch.tensor(noise_stds, dtype=torch.float32, device=device)
+
+    def evaluate(self, xs_b):
+        ys_b = QuadraticRegression.evaluate(self, xs_b)
+        bsz = ys_b.shape[0]
+        idx = torch.randint(
+            low=0,
+            high=4,
+            size=(bsz,),
+            device=ys_b.device,
+        )
+        sigmas = self.noise_stds.to(ys_b.device)[idx].view(bsz, 1)
+        ys_b_noisy = ys_b + torch.randn_like(ys_b) * sigmas
+        if self.renormalize_ys:
+            ys_b_noisy = ys_b_noisy * math.sqrt(self.n_dims) / ys_b_noisy.std()
+        return ys_b_noisy
+
+
 class Relu2nnRegression(Task):
     def __init__(
         self,
@@ -316,6 +402,42 @@ class Relu2nnRegression(Task):
     @staticmethod
     def get_training_metric():
         return mean_squared_error
+
+
+class NoisyRelu2nnRegression(Relu2nnRegression):
+    def __init__(
+        self,
+        n_dims,
+        batch_size,
+        pool_dict=None,
+        seeds=None,
+        scale=1,
+        hidden_layer_size=4,
+        noise_std=0,
+        renormalize_ys=False,
+        device='cpu',
+    ):
+        """
+        noise_std: standard deviation of additive Gaussian noise.
+        """
+        super(NoisyRelu2nnRegression, self).__init__(
+            n_dims=n_dims,
+            batch_size=batch_size,
+            pool_dict=pool_dict,
+            seeds=seeds,
+            scale=scale,
+            hidden_layer_size=hidden_layer_size,
+            device=device,
+        )
+        self.noise_std = noise_std
+        self.renormalize_ys = renormalize_ys
+
+    def evaluate(self, xs_b):
+        ys_b = super().evaluate(xs_b)
+        ys_b_noisy = ys_b + torch.randn_like(ys_b) * self.noise_std
+        if self.renormalize_ys:
+            ys_b_noisy = ys_b_noisy * math.sqrt(self.n_dims) / ys_b_noisy.std()
+        return ys_b_noisy
 
 
 class DecisionTree(Task):
@@ -388,3 +510,37 @@ class DecisionTree(Task):
     @staticmethod
     def get_training_metric():
         return mean_squared_error
+
+
+class NoisyDecisionTree(DecisionTree):
+    def __init__(
+        self,
+        n_dims,
+        batch_size,
+        pool_dict=None,
+        seeds=None,
+        depth=4,
+        noise_std=0,
+        renormalize_ys=False,
+        device='cpu',
+    ):
+        """
+        noise_std: standard deviation of additive Gaussian noise.
+        """
+        super(NoisyDecisionTree, self).__init__(
+            n_dims=n_dims,
+            batch_size=batch_size,
+            pool_dict=pool_dict,
+            seeds=seeds,
+            depth=depth,
+            device=device,
+        )
+        self.noise_std = noise_std
+        self.renormalize_ys = renormalize_ys
+
+    def evaluate(self, xs_b):
+        ys_b = super().evaluate(xs_b)
+        ys_b_noisy = ys_b + torch.randn_like(ys_b) * self.noise_std
+        if self.renormalize_ys:
+            ys_b_noisy = ys_b_noisy * math.sqrt(self.n_dims) / ys_b_noisy.std()
+        return ys_b_noisy
