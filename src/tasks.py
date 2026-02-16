@@ -251,10 +251,10 @@ class QuadraticRegression(LinearRegression):
     def evaluate(self, xs_b):
         w_b = self.w_b.to(xs_b.device)
         ys_b_quad = ((xs_b**2) @ w_b)[:, :, 0]
-        #         ys_b_quad = ys_b_quad * math.sqrt(self.n_dims) / ys_b_quad.std()
         # Renormalize to Linear Regression Scale
         ys_b_quad = ys_b_quad / math.sqrt(3)
-        ys_b_quad = self.scale * ys_b_quad
+        scale = self.scale / math.sqrt(self.n_dims) if self.normalize_w else self.scale
+        ys_b_quad = scale * ys_b_quad
         return ys_b_quad
 
 
@@ -346,12 +346,14 @@ class Relu2nnRegression(Task):
         seeds=None,
         scale=1,
         hidden_layer_size=4,
+        normalize_w=False,
         device='cpu',
     ):
         """scale: a constant by which to scale the randomly sampled weights."""
         super(Relu2nnRegression, self).__init__(n_dims, batch_size, pool_dict, seeds, device)
         self.scale = scale
         self.hidden_layer_size = hidden_layer_size
+        self.normalize_w = normalize_w
 
         if pool_dict is None and seeds is None:
             # Direct generation on target device (fast path)
@@ -381,11 +383,10 @@ class Relu2nnRegression(Task):
     def evaluate(self, xs_b):
         W1 = self.W1.to(xs_b.device)
         W2 = self.W2.to(xs_b.device)
-        # Renormalize to Linear Regression Scale
-        ys_b_nn = (torch.nn.functional.relu(xs_b @ W1) @ W2)[:, :, 0]
+        xs_eff = xs_b / math.sqrt(self.n_dims) if self.normalize_w else xs_b
+        ys_b_nn = (torch.nn.functional.relu(xs_eff @ W1) @ W2)[:, :, 0]
         ys_b_nn = ys_b_nn * math.sqrt(2 / self.hidden_layer_size)
         ys_b_nn = self.scale * ys_b_nn
-        #         ys_b_nn = ys_b_nn * math.sqrt(self.n_dims) / ys_b_nn.std()
         return ys_b_nn
 
     @staticmethod
@@ -415,6 +416,7 @@ class NoisyRelu2nnRegression(Relu2nnRegression):
         hidden_layer_size=4,
         noise_std=0,
         renormalize_ys=False,
+        normalize_w=False,
         device='cpu',
     ):
         """
@@ -427,6 +429,7 @@ class NoisyRelu2nnRegression(Relu2nnRegression):
             seeds=seeds,
             scale=scale,
             hidden_layer_size=hidden_layer_size,
+            normalize_w=normalize_w,
             device=device,
         )
         self.noise_std = noise_std

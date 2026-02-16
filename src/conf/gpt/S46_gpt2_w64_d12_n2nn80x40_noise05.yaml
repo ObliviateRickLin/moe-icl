@@ -6,6 +6,7 @@ training:
   - name: noisy_relu_2nn_regression
     kwargs:
       hidden_layer_size: 4
+      normalize_w: True
       noise_std: 0.5
   curriculum:
     dims:
