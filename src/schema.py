@@ -66,6 +66,9 @@ TASK_LIST = [
     "quadratic_regression",
     "relu_2nn_regression",
     "decision_tree",
+    "noisy_quadratic_regression",
+    "noisy_relu_2nn_regression",
+    "noisy_decision_tree",
 ]
 
 task_schema = {
