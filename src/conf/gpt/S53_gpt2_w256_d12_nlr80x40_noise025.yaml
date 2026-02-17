@@ -3,11 +3,10 @@ inherit:
 training:
   train_steps: 500001
   tasks:
-  - name: noisy_relu_2nn_regression
+  - name: noisy_linear_regression
     kwargs:
-      hidden_layer_size: 4
       normalize_w: True
-      noise_std: 1.0
+      noise_std: 0.25
   curriculum:
     dims:
       start: 10
@@ -15,22 +14,22 @@ training:
       inc: 1
       interval: 2000
     points:
-      start: 51
-      end: 201
-      inc: 5
+      start: 21
+      end: 81
+      inc: 2
       interval: 2000
 model:
   family: gpt2
   n_dims: 40
-  n_positions: 201
-  n_embd: 64
+  n_positions: 81
+  n_embd: 256
   n_layer: 12
   n_head: 8
   mlp_hidden_mult: 4
   rmsnorm_eps: 0.000001
   use_moe: False
-out_dir: ../results/S47_gpt2_w64_d12_n2nn80x40_noise10
+out_dir: ../results/S53_gpt2_w256_d12_nlr80x40_noise025
 wandb:
   project: moe-icl
-  name: S47_gpt2_w64_d12_n2nn80x40_noise10
+  name: S53_gpt2_w256_d12_nlr80x40_noise025
   entity: jinruilin-aijobtech

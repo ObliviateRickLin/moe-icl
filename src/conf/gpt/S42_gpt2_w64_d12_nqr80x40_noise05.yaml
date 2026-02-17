@@ -14,14 +14,14 @@ training:
       inc: 1
       interval: 2000
     points:
-      start: 21
-      end: 81
-      inc: 2
+      start: 51
+      end: 201
+      inc: 5
       interval: 2000
 model:
   family: gpt2
   n_dims: 40
-  n_positions: 81
+  n_positions: 201
   n_embd: 64
   n_layer: 12
   n_head: 8
