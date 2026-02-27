@@ -1,0 +1,41 @@
+inherit:
+- ../base_decoder.yaml
+training:
+  train_steps: 500001
+  tasks:
+  - name: noisy_decision_tree
+    kwargs:
+      depth: 4
+      noise_std: 0.1
+  curriculum:
+    dims:
+      start: 5
+      end: 20
+      inc: 1
+      interval: 2000
+    # 15 intervals to reach d=20; points 26->501 in 15 steps => inc~31.7, use 32
+    points:
+      start: 26
+      end: 501
+      inc: 32
+      interval: 2000
+model:
+  family: gpt2
+  n_dims: 20
+  n_positions: 501
+  n_embd: 256
+  n_layer: 12
+  n_head: 8
+  mlp_hidden_mult: 4
+  rmsnorm_eps: 0.000001
+  use_moe: False
+  normalize_attn: True
+  mlp_bias: False
+  qkv_bias: False
+  use_rope: False
+  noise_scale: 1.0
+out_dir: ../results/S83_gpt2_w512_d12_ndt501x20
+wandb:
+  project: moe-icl
+  name: S83_gpt2_w512_d12_ndt501x20
+  entity: jinruilin-aijobtech
